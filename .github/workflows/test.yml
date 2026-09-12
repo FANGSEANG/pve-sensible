@@ -10,7 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Bash syntax
-        run: bash -n pve-sensible.sh
+        run: |
+          if LC_ALL=C grep -n $'\r' pve-sensible.sh; then
+            echo 'pve-sensible.sh contains CRLF/CR characters' >&2
+            exit 1
+          fi
+          bash -n pve-sensible.sh
       - name: Validate PVE 9.2 version assignment matcher
         shell: bash
         run: |
@@ -77,4 +82,3 @@ jobs:
           fail_action() { die 'expected test failure'; }
           run_menu_action '测试操作' fail_action
           echo 'menu continues'
-
