@@ -485,12 +485,23 @@ EOF
 }
 
 disable_subscription_popup() {
+  local test_file
   [[ -f "$TOOLKIT_JS" ]] || die '未找到 Proxmox 前端工具文件。'
+  if grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$TOOLKIT_JS"; then info '订阅弹窗补丁已存在。'; return; fi
+  test_file=$(mktemp) || die '无法创建订阅弹窗兼容性测试文件。'
+  cp -- "$TOOLKIT_JS" "$test_file"
+  if ! perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$test_file" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"; then
+    rm -f "$test_file"
+    die '当前 PVE 前端的订阅弹窗定位不兼容；未修改任何文件。'
+  fi
+  rm -f "$test_file"
   begin_transaction subscription-popup
   backup "$TOOLKIT_JS"
-  if grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$TOOLKIT_JS"; then info '订阅弹窗补丁已存在。'; return; fi
   schedule_ui_rollback 'subscription-popup patch'
-  perl -0777 -i -pe 's{(Ext\.Msg\.show\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)}{void({ // PVE_SENSIBLE_NO_SUBSCRIPTION\n$1}s or die "PVE_SENSIBLE: subscription popup insertion point not found\n"' "$TOOLKIT_JS"
+  if ! perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$TOOLKIT_JS"; then
+    "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+    die '订阅弹窗补丁写入失败，原始文件已恢复。'
+  fi
   systemctl restart pveproxy
   systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
   info '登录订阅弹窗补丁已应用。PVE 软件包升级后可能会被覆盖。'
