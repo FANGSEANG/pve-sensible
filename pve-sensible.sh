@@ -447,7 +447,7 @@ menu() {
     cat <<'EOF'
 
 PVE 简洁维护工具（PVE 9）
-  1) 安装简洁、左对齐的硬件概要
+  1) 概要信息定制
   2) 配置 Debian / PVE no-subscription 软件源
   3) 仅关闭登录时的订阅弹窗
   4) 通过 accept_ra=2 为 vmbr0 启用 SLAAC IPv6（不重启网络）
