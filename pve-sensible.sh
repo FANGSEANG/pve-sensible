@@ -156,8 +156,16 @@ overview_selected() {
   [[ "$DISK_IO" == 1 ]] && items+=('NVMe IO 信息')
   (IFS='、'; printf '%s' "${items[*]}")
 }
+overview_profile_mark() {
+  local profile="$1"
+  case "$profile" in
+    o) [[ "$CPU_FREQ$CPU_LIMITS$CPU_GOVERNOR$CPU_POWER$CPU_TEMP$CPU_CORE_TEMP$UPS_INFO$DISK_BASE$DISK_POWER$DISK_IO" == 1111111111 ]] && printf '[*]' || printf '[ ]' ;;
+    p) [[ "$CPU_FREQ$CPU_LIMITS$CPU_GOVERNOR$CPU_POWER$CPU_TEMP$CPU_CORE_TEMP$UPS_INFO$DISK_BASE$DISK_POWER$DISK_IO" == 1110101100 ]] && printf '[*]' || printf '[ ]' ;;
+    q) [[ "$CPU_FREQ$CPU_LIMITS$CPU_GOVERNOR$CPU_POWER$CPU_TEMP$CPU_CORE_TEMP$UPS_INFO$DISK_BASE$DISK_POWER$DISK_IO" == 1000101100 ]] && printf '[*]' || printf '[ ]' ;;
+  esac
+}
 configure_overview() {
-  local choices c action
+  local choices c
   overview_load
   while true; do
     cat <<EOF
@@ -174,12 +182,21 @@ $(mark "$DISK_BASE") a) NVMe 基础信息与寿命（需要 smartmontools）
 $(mark "$DISK_POWER") b) NVMe 通电信息（依赖 a）
 $(mark "$DISK_IO") c) NVMe IO 信息（依赖 a）
 
-o) 高大全：全部启用（含功率、核心温度、通电、IO）
-p) 精简：实时/最小最大频率、工作模式、CPU 温度、UPS、NVMe 基础
-q) 极简：实时频率、CPU 温度、UPS、NVMe 基础
-x) 恢复默认精简方案       s) 跳过本次修改
+$(overview_profile_mark o) o) 高大全：全部启用（含功率、核心温度、通电、IO）
+$(overview_profile_mark p) p) 精简：实时/最小最大频率、工作模式、CPU 温度、UPS、NVMe 基础
+$(overview_profile_mark q) q) 极简：实时频率、CPU 温度、UPS、NVMe 基础
+[ ] x) 恢复默认精简方案       [ ] s) 跳过本次修改
 EOF
-    read -r -p '选择后按 Enter 应用：' choices
+    read -r -p '输入编号切换；直接按 Enter 应用：' choices
+    if [[ -z "$choices" ]]; then
+      [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
+      printf '\n本次概要配置：%s\n' "$(overview_selected)"
+      overview_save
+      if [[ "$UPS_INFO" == 1 ]] && ! command -v apcaccess >/dev/null 2>&1; then
+        install_ups_support
+      fi
+      return 0
+    fi
     [[ "$choices" == s ]] && return 1
     [[ "$choices" == o || "$choices" == p || "$choices" == q ]] && overview_preset "$choices"
     [[ "$choices" == x ]] && overview_defaults
@@ -194,15 +211,6 @@ EOF
       esac
     done
     [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
-    printf '\n本次概要预览：%s\n' "$(overview_selected)"
-    read -r -p '按 Enter 确认应用；输入 r 返回继续调整；输入 s 取消：' action
-    [[ "$action" == r || "$action" == R ]] && continue
-    [[ "$action" == s || "$action" == S ]] && return 1
-    overview_save
-    if [[ "$UPS_INFO" == 1 ]] && ! command -v apcaccess >/dev/null 2>&1; then
-      install_ups_support
-    fi
-    return 0
   done
 }
 
