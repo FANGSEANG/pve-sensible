@@ -69,6 +69,8 @@ if command -v apcaccess >/dev/null 2>&1; then
     linev=$(printf '%s\n' "$ups" | awk -F: '/^LINEV/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
     printf 'UPS：%s%s%s%s\n' "${status:-未知}" "${charge:+ · 电池 $charge}" "${timeleft:+ · 剩余 $timeleft}" "${linev:+ · 市电 $linev}"
   fi
+else
+  printf 'UPS：未安装 apcupsd（菜单 8 可安装；apcaccess 由该软件包提供）\n'
 fi
 
 for dev in /sys/class/nvme/nvme*; do
@@ -220,6 +222,25 @@ disable_subscription_popup() {
   keep_ui_changes
 }
 
+install_ups_support() {
+  if command -v apcaccess >/dev/null 2>&1; then
+    info 'apcaccess is already available; no package change was made.'
+    apcaccess status 2>/dev/null | grep -E '^(STATUS|BCHARGE|TIMELEFT|LINEV)' || true
+    return 0
+  fi
+  info 'This installs the Debian apcupsd package. It does not install NUT or alter another UPS service.'
+  info 'The package provides both the apcupsd daemon and the apcaccess command used by the overview.'
+  confirm 'Install apcupsd now?' || return 0
+  apt update
+  apt install -y apcupsd
+  if command -v apcaccess >/dev/null 2>&1; then
+    info 'apcupsd installed. Verify its own configuration and USB/serial device before relying on shutdown protection.'
+    systemctl --no-pager --full status apcupsd || true
+  else
+    die 'The apcupsd installation finished but apcaccess was not found.'
+  fi
+}
+
 passthrough_status() {
   info 'IOMMU kernel messages:'; dmesg | grep -Ei 'DMAR|IOMMU' | tail -n 20 || true
   info 'PCI devices:'; lspci -nn
@@ -258,12 +279,14 @@ PVE Sensible (PVE 9)
   5) Check IOMMU / PCI passthrough readiness
   6) Prepare GRUB + VFIO for IOMMU passthrough (reboot required)
   7) Restore the latest backed-up PVE UI files
+  8) Install apcupsd for UPS overview (does not use NUT)
   0) Exit
 EOF
     read -r -p 'Choose: ' choice
     case "$choice" in
       1) apply_overview ;; 2) set_sources_tuna ;; 3) disable_subscription_popup ;;
       4) set_ipv6_slaac ;; 5) passthrough_status ;; 6) enable_iommu ;; 7) restore_latest_ui ;;
+      8) install_ups_support ;;
       0) exit 0 ;; *) printf 'Invalid choice.\n' ;;
     esac
   done
