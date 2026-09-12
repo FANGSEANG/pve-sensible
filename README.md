@@ -46,7 +46,15 @@ ip -6 addr show dev vmbr0 scope global
 
 ## 使用
 
-先复制脚本到 PVE 9 主机，检查后执行：
+在 PVE 9 的 Shell 中执行以下一行即可下载并启动：
+
+```bash
+wget -qO /root/pve-sensible.sh https://raw.githubusercontent.com/FANGSEANG/pve-sensible/main/pve-sensible.sh && chmod 700 /root/pve-sensible.sh && /root/pve-sensible.sh
+```
+
+它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。首次使用建议先选择菜单 `1`，确认浏览器页面正常后在 SSH 会话输入 `KEEP`。
+
+也可以先复制脚本到 PVE 9 主机，检查后执行：
 
 ```bash
 chmod +x pve-sensible.sh
