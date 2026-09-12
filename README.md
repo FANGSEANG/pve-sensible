@@ -36,6 +36,10 @@ ip -6 addr show dev vmbr0 scope global
 
 如果已有 `iface vmbr0 inet6 ...` 配置，脚本会拒绝叠加，必须先人工确认现状。
 
+## 软件源
+
+菜单第 2 项提供三个 **PVE 9 / Debian 13 (trixie)** 预设：清华 TUNA、中科大 USTC、官方 Debian + Proxmox。所有预设均启用 `pve-no-subscription`，并注释现有企业源；不会伪造订阅，也不会处理 Ceph 或 CT 模板源。切换前会备份源文件并要求二次确认，完成后才运行 `apt update`。
+
 ## 直通
 
 “直通准备”只写入 IOMMU 启动参数和 VFIO 模块，必须手动重启。它不会猜测、更不会绑定 PCI 设备；绑定错误的网卡、系统盘控制器或核显会让宿主机失联或无法启动。
