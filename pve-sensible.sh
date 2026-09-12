@@ -293,25 +293,54 @@ restore_latest_ui() {
 }
 
 preflight_overview_compatibility() {
-  local node_test js_test
+  local node_test js_test block
   node_test=$(mktemp) || die '无法创建概要信息兼容性测试文件。'
   js_test=$(mktemp) || { rm -f "$node_test"; die '无法创建概要信息兼容性测试文件。'; }
+  block=$(mktemp) || { rm -f "$node_test" "$js_test"; die '无法创建概要信息兼容性测试文件。'; }
   cp -- "$NODES_PM" "$node_test"
   cp -- "$MANAGER_JS" "$js_test"
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
     if ! perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "no match\n"' "$node_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
-      rm -f "$node_test" "$js_test"
+      rm -f "$node_test" "$js_test" "$block"
       die '当前 PVE 的 Nodes.pm 与脚本不兼容；未修改任何文件。请提交 pveversion 附近的代码后再适配。'
     fi
   fi
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
-    if ! perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27\"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n\t\t{\n\t\t\titemId: \x27pve-sensible-summary\x27, colspan: 2, printBar: false,\n\t\t\ttitle: gettext(\x27硬件状态\x27), textField: \x27pve_sensible_summary\x27,\n\t\t\trenderer: function(value) { return Ext.htmlEncode(value || \x27\x27).replace(/\\n/g, \x27<br>\x27); },\n\t\t},)}s or die "no match\n"' "$js_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
-      rm -f "$node_test" "$js_test"
+    write_overview_js_block "$block"
+    if ! insert_after_pveversion "$js_test" "$block" || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
+      rm -f "$node_test" "$js_test" "$block"
       die '当前 PVE 的 pvemanagerlib.js 与脚本不兼容；未修改任何文件。请提交 pveversion 概要项附近的代码后再适配。'
     fi
   fi
-  rm -f "$node_test" "$js_test"
+  rm -f "$node_test" "$js_test" "$block"
   info '概要信息兼容性预检通过：实际文件可完成后端与前端插入。'
+}
+
+write_overview_js_block() {
+  local target="$1" align
+  case "$OVERVIEW_ALIGN" in l) align=left ;; r) align=right ;; m) align=center ;; j) align=justify ;; esac
+  cat >"$target" <<EOF
+        // PVE_SENSIBLE_OVERVIEW
+        {
+            itemId: 'pve-sensible-summary',
+            colspan: 2,
+            printBar: false,
+            title: gettext('硬件状态'),
+            textField: 'pve_sensible_summary',
+            style: { textAlign: '$align' },
+            renderer: function(value) {
+                return Ext.htmlEncode(value || '').replace(/\\n/g, '<br>');
+            },
+        },
+EOF
+}
+
+insert_after_pveversion() {
+  local target="$1" block="$2" line
+  # Same anchoring approach as pve-diy: locate pveversion, then its object end.
+  line=$(awk '/textField:[[:space:]]*[\x27\"]pveversion[\x27\"]/{found=1} found && /^[[:space:]]*},[[:space:]]*$/{print NR; exit}' "$target")
+  [[ "$line" =~ ^[0-9]+$ ]] || return 1
+  sed -i "${line}r $block" "$target"
 }
 
 apply_overview() {
@@ -327,7 +356,13 @@ apply_overview() {
     perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "PVE_SENSIBLE: Nodes.pm insertion point not found\n"' "$NODES_PM"
   fi
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$MANAGER_JS"; then
-    perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27\"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n\t\t{\n\t\t\titemId: \x27pve-sensible-summary\x27, colspan: 2, printBar: false,\n\t\t\ttitle: gettext(\x27硬件状态\x27), textField: \x27pve_sensible_summary\x27,\n\t\t\trenderer: function(value) { return Ext.htmlEncode(value || \x27\x27).replace(/\\n/g, \x27<br>\x27); },\n\t\t},)}s or die "PVE_SENSIBLE: pvemanagerlib.js insertion point not found\n"' "$MANAGER_JS"
+    local block
+    block=$(mktemp) || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die '无法创建概要信息前端区块。'; }
+    write_overview_js_block "$block"
+    if ! insert_after_pveversion "$MANAGER_JS" "$block"; then
+      rm -f "$block"; "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'PVE_SENSIBLE: pveversion 插入点未找到，原始文件已恢复。'
+    fi
+    rm -f "$block"
   fi
   if ! perl -c "$NODES_PM" >/dev/null; then "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'Perl 校验失败，原始文件已恢复。'; fi
   systemctl restart pveproxy
@@ -490,7 +525,7 @@ disable_subscription_popup() {
   if grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$TOOLKIT_JS"; then info '订阅弹窗补丁已存在。'; return; fi
   test_file=$(mktemp) || die '无法创建订阅弹窗兼容性测试文件。'
   cp -- "$TOOLKIT_JS" "$test_file"
-  if ! perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$test_file" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"; then
+  if ! disable_subscription_in_file "$test_file" || ! grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"; then
     rm -f "$test_file"
     die '当前 PVE 前端的订阅弹窗定位不兼容；未修改任何文件。'
   fi
@@ -498,7 +533,7 @@ disable_subscription_popup() {
   begin_transaction subscription-popup
   backup "$TOOLKIT_JS"
   schedule_ui_rollback 'subscription-popup patch'
-  if ! perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$TOOLKIT_JS"; then
+  if ! disable_subscription_in_file "$TOOLKIT_JS"; then
     "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
     die '订阅弹窗补丁写入失败，原始文件已恢复。'
   fi
@@ -506,6 +541,20 @@ disable_subscription_popup() {
   systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
   info '登录订阅弹窗补丁已应用。PVE 软件包升级后可能会被覆盖。'
   keep_ui_changes
+}
+
+disable_subscription_in_file() {
+  local target="$1"
+  # From pve-diy: constrain the edit to the subscription API callback, then
+  # replace its complete status condition. The marker makes the patch auditable.
+  sed -r -i '/\/nodes\/localhost\/subscription/,+30 {
+    /^\s+if\s*\(/ {
+        :loop
+        N
+        /\s*\)\s*\{/!b loop
+        s/(if\s*\([[:space:]]*res\s*===\s*null\s*(\|\|\s*res\s*===\s*undefined\s*)?(\|\|\s*!res\s*)?(\|\|\s*res\.data\.status\.toLowerCase\(\)\s*!==\s*[\x27\"]active[\x27\"]\s*)?[[:space:]]*\)\s*\{)/if(false){ \/\/ PVE_SENSIBLE_NO_SUBSCRIPTION/
+    }
+}' "$target"
 }
 
 install_ups_support() {
