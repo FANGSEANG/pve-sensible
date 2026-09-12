@@ -14,6 +14,12 @@
 
 PVE 包升级可能覆盖修改；之后重新执行“安装概览”即可。
 
+### UPS 依赖
+
+UPS 行使用 `apcaccess status` 读取信息。`apcaccess` 不是独立插件，而是 Debian `apcupsd` 软件包附带的命令。
+
+若尚未安装，菜单第 8 项会在明确确认后执行 `apt install apcupsd`；它不会安装或替换为 NUT，也不会改写一个已经存在的 `apcupsd` 配置。安装完成只代表概览具备读取能力，仍必须自行确认 `apcupsd` 服务、USB/串口设备和断电关机策略实际工作。
+
 ## IPv6
 
 IPv6 采用已验证的 SLAAC 方案：在 `/etc/network/interfaces` 的 `vmbr0` 段加入：
