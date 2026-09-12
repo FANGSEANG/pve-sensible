@@ -14,15 +14,17 @@ jobs:
       - name: Validate PVE 9.2 version assignment matcher
         shell: bash
         run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           test_file=$(mktemp)
           cat > "$test_file" <<'EOF'
               $res->{pveversion} = PVE::pvecfg::package() . "/" . PVE::pvecfg::version_text();
           EOF
-          perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "no match\n"' "$test_file"
+          insert_nodes_summary "$test_file"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
       - name: Validate PVE Manager overview insertion matcher
         shell: bash
         run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           test_file=$(mktemp)
           block=$(mktemp)
           cat > "$test_file" <<'EOF'
@@ -33,24 +35,26 @@ jobs:
               value: '',
           },
           EOF
-          printf '%s\n' '// PVE_SENSIBLE_OVERVIEW' > "$block"
-          line=$(awk '/textField:[[:space:]]*[\x27\"]pveversion[\x27\"]/{found=1} found && /^[[:space:]]*},[[:space:]]*$/{print NR; exit}' "$test_file")
-          test "$line" = 5
-          sed -i "${line}r $block" "$test_file"
+          OVERVIEW_ALIGN=r
+          write_overview_js_block "$block"
+          insert_after_pveversion "$test_file" "$block"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
+          grep -q "textAlign: 'right'" "$test_file"
       - name: Validate CT template mirror replacement matcher
         shell: bash
         run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           test_file=$(mktemp)
           cat > "$test_file" <<'EOF'
           my $url = 'http://download.proxmox.com/images/system';
           EOF
           CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox
-          perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.(?:tuna\.tsinghua\.edu\.cn|ustc\.edu\.cn))/proxmox(?=/|[\x27\"])}{'"$CT_URI"'}g' "$test_file"
+          replace_ct_source "$test_file" "$CT_URI"
           grep -qF "$CT_URI/images/system" "$test_file"
       - name: Validate subscription popup matcher
         shell: bash
         run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           test_file=$(mktemp)
           cat > "$test_file" <<'EOF'
           Proxmox.Utils.API2Request({
@@ -63,14 +67,14 @@ jobs:
               },
           });
           EOF
-          sed -r -i '/\/nodes\/localhost\/subscription/,+30 {
-            /^\s+if\s*\(/ {
-                :loop
-                N
-                /\s*\)\s*\{/!b loop
-                s/(if\s*\([[:space:]]*res\s*===\s*null\s*(\|\|\s*res\s*===\s*undefined\s*)?(\|\|\s*!res\s*)?(\|\|\s*res\.data\.status\.toLowerCase\(\)\s*!==\s*[\x27\"]active[\x27\"]\s*)?[[:space:]]*\)\s*\{)/if(false){ \/\/ PVE_SENSIBLE_NO_SUBSCRIPTION/
-            }
-          }' "$test_file"
+          disable_subscription_in_file "$test_file"
           grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"
           grep -q 'if(false)' "$test_file"
+      - name: Validate failed menu actions do not terminate caller
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          fail_action() { die 'expected test failure'; }
+          run_menu_action '测试操作' fail_action
+          echo 'menu continues'
 
