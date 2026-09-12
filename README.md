@@ -14,7 +14,7 @@
 
 这会修改 PVE 的 `Nodes.pm` 与 `pvemanagerlib.js`。脚本会先备份到 `/var/lib/pve-sensible/backups/<时间戳>/`，并在重启 `pveproxy` 前执行 `perl -c` 校验。
 
-更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 并检查服务后，会要求你在 SSH 会话里输入 `KEEP`；只有确认浏览器页面正常，才会取消自动回退。没有输入 `KEEP`、断开 SSH，或页面无法打开时，原始 UI 文件会自行恢复。菜单第 7 项也可手动恢复最近一次 UI 备份。
+更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 并检查服务后，会要求你在 SSH 会话里输入 `KEEP`；只有确认浏览器页面正常，才会取消自动回退。没有输入 `KEEP`、断开 SSH，或页面无法打开时，原始 UI 文件会自行恢复。菜单第 6 项也可手动恢复最近一次 UI 备份。
 
 PVE 包升级可能覆盖修改；之后重新执行“安装概览”即可。
 
@@ -42,7 +42,9 @@ ip -6 addr show dev vmbr0 scope global
 
 ## 软件源
 
-菜单第 2 项提供三个 **PVE 9 / Debian 13 (trixie)** 预设：清华 TUNA、中科大 USTC、官方 Debian + Proxmox。所有预设均启用 `pve-no-subscription`，并注释现有企业源；不会伪造订阅，也不会处理 Ceph 或 CT 模板源。切换前会备份源文件并要求二次确认，完成后才运行 `apt update`。
+菜单第 2 项将五类来源拆开：Debian、PVE 企业源、PVE 无订阅源、Ceph 无订阅源、CT 模板下载源；每项可选择清华 TUNA、中科大 USTC 或官方源。
+
+Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验证；验证失败会立即恢复本次涉及的文件，且不会自动执行系统升级。企业源仅被注释，不会删除。Ceph 仅在检测到已有 Ceph 配置或已安装 Ceph 软件包时才允许写入，防止普通 PVE 节点误加源。CT 模板源会修改 `PVE/APLInfo.pm`，不运行 `apt update`；该文件可能被 PVE 更新覆盖，脚本会备份并提示使用 `pveam update` 刷新模板列表。
 
 ## 直通
 
