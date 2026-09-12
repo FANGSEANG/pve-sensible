@@ -663,4 +663,3 @@ if [[ "${PVE_SENSIBLE_LIB_ONLY:-0}" != 1 ]]; then
   need_pve9
   menu
 fi
-
