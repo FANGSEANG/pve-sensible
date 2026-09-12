@@ -301,7 +301,7 @@ apply_overview() {
   write_summary_helper
 
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$NODES_PM"; then
-    perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*PVE::pvecfg::package\(\);)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "PVE_SENSIBLE: Nodes.pm insertion point not found\n"' "$NODES_PM"
+    perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "PVE_SENSIBLE: Nodes.pm insertion point not found\n"' "$NODES_PM"
   fi
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$MANAGER_JS"; then
     perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27\"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n\t\t{\n\t\t\titemId: \x27pve-sensible-summary\x27, colspan: 2, printBar: false,\n\t\t\ttitle: gettext(\x27硬件状态\x27), textField: \x27pve_sensible_summary\x27,\n\t\t\trenderer: function(value) { return Ext.htmlEncode(value || \x27\x27).replace(/\\n/g, \x27<br>\x27); },\n\t\t},)}s or die "PVE_SENSIBLE: pvemanagerlib.js insertion point not found\n"' "$MANAGER_JS"
