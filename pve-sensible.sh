@@ -275,6 +275,7 @@ enable_iommu() {
   [[ -f "$grub" ]] || die "$grub not found. This module currently supports GRUB hosts only."
   if grep -qi 'AuthenticAMD' /proc/cpuinfo; then cpu_arg='amd_iommu=on iommu=pt'; else cpu_arg='intel_iommu=on iommu=pt'; fi
   confirm "Add '$cpu_arg' and VFIO modules? A reboot will be required." || return 0
+  begin_transaction iommu
   backup "$grub"; backup /etc/modules
   grep -q "$cpu_arg" "$grub" || sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $cpu_arg\"/" "$grub"
   for module in vfio vfio_iommu_type1 vfio_pci; do grep -qx "$module" /etc/modules || echo "$module" >>/etc/modules; done
