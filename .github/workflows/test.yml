@@ -42,4 +42,14 @@ jobs:
           CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox
           perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.(?:tuna\.tsinghua\.edu\.cn|ustc\.edu\.cn))/proxmox(?=/|[\x27\"])}{'"$CT_URI"'}g' "$test_file"
           grep -qF "$CT_URI/images/system" "$test_file"
+      - name: Validate subscription popup matcher
+        shell: bash
+        run: |
+          test_file=$(mktemp)
+          cat > "$test_file" <<'EOF'
+          Ext.Msg.show({ title: gettext('No valid subscription') });
+          EOF
+          perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$test_file"
+          grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"
+          grep -q 'Ext.emptyFn' "$test_file"
 
