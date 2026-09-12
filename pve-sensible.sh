@@ -351,51 +351,137 @@ set_ipv6_slaac() {
   ip -6 addr show dev vmbr0 scope global || true
 }
 
-set_sources() {
-  local codename mirror debian_uri security_uri pve_uri debian=/etc/apt/sources.list.d/debian.sources pve=/etc/apt/sources.list.d/pve-no-subscription.sources enterprise=/etc/apt/sources.list.d/pve-enterprise.sources
-  codename=$(. /etc/os-release; printf '%s' "$VERSION_CODENAME")
-  [[ "$codename" == trixie ]] || die "PVE 9 预期 Debian trixie，当前为：$codename"
+choose_mirror() {
+  local mirror
   cat <<'EOF'
 
-请选择软件源方案（均使用 PVE no-subscription，而非企业订阅源）：
-  1) 清华 TUNA 镜像
-  2) 中科大 USTC 镜像
-  3) Debian + Proxmox 官方源
+请选择镜像：
+  1) 清华 TUNA
+  2) 中科大 USTC
+  3) 官方源
   0) 取消
 EOF
   read -r -p '请选择：' mirror
   case "$mirror" in
-    1) debian_uri=https://mirrors.tuna.tsinghua.edu.cn/debian; security_uri=https://security.debian.org/debian-security; pve_uri=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve ;;
-    2) debian_uri=https://mirrors.ustc.edu.cn/debian; security_uri=https://mirrors.ustc.edu.cn/debian-security; pve_uri=https://mirrors.ustc.edu.cn/proxmox/debian/pve ;;
-    3) debian_uri=https://deb.debian.org/debian; security_uri=https://security.debian.org/debian-security; pve_uri=http://download.proxmox.com/debian/pve ;;
-    0) return 0 ;;
-    *) die '无效的软件源选择。' ;;
+    1) MIRROR_NAME='清华 TUNA'; DEBIAN_URI=https://mirrors.tuna.tsinghua.edu.cn/debian; SECURITY_URI=https://security.debian.org/debian-security; PVE_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve; CEPH_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/ceph-squid; CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox ;;
+    2) MIRROR_NAME='中科大 USTC'; DEBIAN_URI=https://mirrors.ustc.edu.cn/debian; SECURITY_URI=https://mirrors.ustc.edu.cn/debian-security; PVE_URI=https://mirrors.ustc.edu.cn/proxmox/debian/pve; CEPH_URI=https://mirrors.ustc.edu.cn/proxmox/debian/ceph-squid; CT_URI=https://mirrors.ustc.edu.cn/proxmox ;;
+    3) MIRROR_NAME='官方源'; DEBIAN_URI=https://deb.debian.org/debian; SECURITY_URI=https://security.debian.org/debian-security; PVE_URI=http://download.proxmox.com/debian/pve; CEPH_URI=http://download.proxmox.com/debian/ceph-squid; CT_URI=http://download.proxmox.com ;;
+    0) return 1 ;;
+    *) printf '无效选择。\n'; return 1 ;;
   esac
-  confirm "确定使用所选软件源覆盖 Debian 与 PVE 的源配置吗？" || return 0
-  begin_transaction sources
-  backup "$debian"; backup "$pve"; backup "$enterprise"
+}
+
+restore_source_transaction() {
+  local dir="$1"; shift
+  local target name
+  for target in "$@"; do
+    name=$(basename "$target")
+    rm -f -- "$target"
+    [[ -f "$dir/$name" ]] && cp -a -- "$dir/$name" "$target"
+  done
+}
+
+validate_apt_or_restore() {
+  local dir="$1"; shift
+  if ! apt-get update; then
+    info 'apt 更新验证失败，正在自动恢复本次变更的源文件。'
+    restore_source_transaction "$dir" "$@"
+    die '软件源验证失败；已恢复修改前的源配置。'
+  fi
+}
+
+write_debian_source() {
+  local debian="$1"
   cat >"$debian" <<EOF
 Types: deb
-URIs: $debian_uri
+URIs: $DEBIAN_URI
 Suites: trixie trixie-updates trixie-backports
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
-URIs: $security_uri
+URIs: $SECURITY_URI
 Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
+}
+
+write_pve_sources() {
+  local pve="$1" enterprise="$2"
   cat >"$pve" <<EOF
 Types: deb
-URIs: $pve_uri
+URIs: $PVE_URI
 Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
   [[ -f "$enterprise" ]] && sed -i 's/^\([^#]\)/# \1/' "$enterprise"
-  apt update
+}
+
+write_ceph_source() {
+  local ceph="$1"
+  cat >"$ceph" <<EOF
+Types: deb
+URIs: $CEPH_URI
+Suites: trixie
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+}
+
+set_ct_template_source() {
+  local apl=/usr/share/perl5/PVE/APLInfo.pm
+  [[ -f "$apl" ]] || die "未找到 $apl。"
+  choose_mirror || return 0
+  confirm "将 CT 模板下载地址改为 $MIRROR_NAME 吗？PVE 软件包更新可能覆盖此修改。" || return 0
+  begin_transaction ct-template
+  backup "$apl"
+  if ! perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.(?:tuna\.tsinghua\.edu\.cn|ustc\.edu\.cn))/proxmox(?=/|[\x27\"])}{'"$CT_URI"'}g' "$apl"; then
+    restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"
+    die 'CT 模板源定位失败；原文件已恢复。'
+  fi
+  grep -qF "$CT_URI" "$apl" || { restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"; die 'CT 模板源定位失败；原文件已恢复。'; }
+  info "CT 模板源已改为 $MIRROR_NAME。执行 pveam update 后生效；PVE 更新后可通过备份记录重新应用。"
+}
+
+set_sources() {
+  local codename action debian=/etc/apt/sources.list.d/debian.sources pve=/etc/apt/sources.list.d/pve-no-subscription.sources enterprise=/etc/apt/sources.list.d/pve-enterprise.sources ceph=/etc/apt/sources.list.d/ceph.sources
+  codename=$(. /etc/os-release; printf '%s' "$VERSION_CODENAME")
+  [[ "$codename" == trixie ]] || die "PVE 9 预期 Debian trixie，当前为：$codename"
+  cat <<'EOF'
+
+软件源配置（每项独立备份；apt 更新验证失败将自动恢复）：
+  1) Debian 软件源
+  2) PVE：关闭企业源并配置无订阅源
+  3) Ceph 无订阅源（仅在已有 Ceph 配置或已安装 Ceph 时可用）
+  4) CT 模板下载源（修改 APLInfo.pm；PVE 更新可能覆盖）
+  5) 常用组合：Debian + PVE 无订阅源 + 已存在的 Ceph 源
+  0) 返回
+EOF
+  read -r -p '请选择：' action
+  [[ "$action" == 0 ]] && return 0
+  [[ "$action" =~ ^[1-5]$ ]] || { printf '无效选择。\n'; return 0; }
+  [[ "$action" == 4 ]] && { set_ct_template_source; return; }
+  if [[ "$action" == 3 || "$action" == 5 ]]; then
+    if [[ ! -f "$ceph" ]] && ! dpkg-query -W -f='${Status}' 'ceph*' 2>/dev/null | grep -q 'install ok installed'; then
+      [[ "$action" == 3 ]] && die '未检测到 Ceph 配置或已安装的 Ceph 软件包，拒绝新增 Ceph 源。'
+      info '未检测到 Ceph，常用组合将跳过 Ceph 源。'
+    fi
+  fi
+  choose_mirror || return 0
+  confirm "确认将所选项目切换为 $MIRROR_NAME，并在 apt 更新失败时自动恢复吗？" || return 0
+  begin_transaction sources
+  case "$action" in
+    1) backup "$debian"; write_debian_source "$debian"; validate_apt_or_restore "$CURRENT_BACKUP_DIR" "$debian" ;;
+    2) backup "$pve"; backup "$enterprise"; write_pve_sources "$pve" "$enterprise"; validate_apt_or_restore "$CURRENT_BACKUP_DIR" "$pve" "$enterprise" ;;
+    3) backup "$ceph"; write_ceph_source "$ceph"; validate_apt_or_restore "$CURRENT_BACKUP_DIR" "$ceph" ;;
+    5)
+      backup "$debian"; backup "$pve"; backup "$enterprise"
+      write_debian_source "$debian"; write_pve_sources "$pve" "$enterprise"
+      if [[ -f "$ceph" ]] || dpkg-query -W -f='${Status}' 'ceph*' 2>/dev/null | grep -q 'install ok installed'; then backup "$ceph"; write_ceph_source "$ceph"; validate_apt_or_restore "$CURRENT_BACKUP_DIR" "$debian" "$pve" "$enterprise" "$ceph"; else validate_apt_or_restore "$CURRENT_BACKUP_DIR" "$debian" "$pve" "$enterprise"; fi ;;
+  esac
+  info "软件源已通过 apt 更新验证。本次备份：$CURRENT_BACKUP_DIR"
 }
 
 disable_subscription_popup() {
@@ -471,7 +557,7 @@ menu() {
 
 PVE 简洁维护工具（PVE 9）
   1) 概要信息定制
-  2) 配置 Debian / PVE no-subscription 软件源
+  2) 软件源配置（Debian / 企业源 / 无订阅 / Ceph / CT 模板）
   3) 仅关闭登录时的订阅弹窗
   4) 通过 accept_ra=2 为 vmbr0 启用 SLAAC IPv6（不重启网络）
   5) PCI 直通 / IOMMU（检查并按需准备 GRUB + VFIO）
