@@ -292,9 +292,32 @@ restore_latest_ui() {
   info "已从以下备份恢复 UI 文件：$latest"
 }
 
+preflight_overview_compatibility() {
+  local node_test js_test
+  node_test=$(mktemp) || die '无法创建概要信息兼容性测试文件。'
+  js_test=$(mktemp) || { rm -f "$node_test"; die '无法创建概要信息兼容性测试文件。'; }
+  cp -- "$NODES_PM" "$node_test"
+  cp -- "$MANAGER_JS" "$js_test"
+  if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
+    if ! perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "no match\n"' "$node_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
+      rm -f "$node_test" "$js_test"
+      die '当前 PVE 的 Nodes.pm 与脚本不兼容；未修改任何文件。请提交 pveversion 附近的代码后再适配。'
+    fi
+  fi
+  if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
+    if ! perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27\"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n\t\t{\n\t\t\titemId: \x27pve-sensible-summary\x27, colspan: 2, printBar: false,\n\t\t\ttitle: gettext(\x27硬件状态\x27), textField: \x27pve_sensible_summary\x27,\n\t\t\trenderer: function(value) { return Ext.htmlEncode(value || \x27\x27).replace(/\\n/g, \x27<br>\x27); },\n\t\t},)}s or die "no match\n"' "$js_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
+      rm -f "$node_test" "$js_test"
+      die '当前 PVE 的 pvemanagerlib.js 与脚本不兼容；未修改任何文件。请提交 pveversion 概要项附近的代码后再适配。'
+    fi
+  fi
+  rm -f "$node_test" "$js_test"
+  info '概要信息兼容性预检通过：实际文件可完成后端与前端插入。'
+}
+
 apply_overview() {
   [[ -f "$NODES_PM" && -f "$MANAGER_JS" ]] || die '未找到 PVE 前端文件。'
   configure_overview || return 0
+  preflight_overview_compatibility
   begin_transaction overview
   backup "$NODES_PM"; backup "$MANAGER_JS"
   schedule_ui_rollback 'overview installation'
