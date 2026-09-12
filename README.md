@@ -54,6 +54,14 @@ wget -qO /root/pve-sensible.sh https://raw.githubusercontent.com/FANGSEANG/pve-s
 
 它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。首次使用建议先选择菜单 `1`，确认浏览器页面正常后在 SSH 会话输入 `KEEP`。
 
+后续再次打开菜单，直接执行：
+
+```bash
+bash /root/pve-sensible.sh
+```
+
+如需更新为 GitHub 上的最新版，再重新执行上面的 `wget` 一行命令即可。
+
 也可以先复制脚本到 PVE 9 主机，检查后执行：
 
 ```bash
