@@ -32,4 +32,14 @@ jobs:
           EOF
           perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n}s or die "no match\n"' "$test_file"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
+      - name: Validate CT template mirror replacement matcher
+        shell: bash
+        run: |
+          test_file=$(mktemp)
+          cat > "$test_file" <<'EOF'
+          my $url = 'http://download.proxmox.com/images/system';
+          EOF
+          CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox
+          perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.(?:tuna\.tsinghua\.edu\.cn|ustc\.edu\.cn))/proxmox(?=/|[\x27\"])}{'"$CT_URI"'}g' "$test_file"
+          grep -qF "$CT_URI/images/system" "$test_file"
 
