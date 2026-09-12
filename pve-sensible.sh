@@ -300,7 +300,7 @@ preflight_overview_compatibility() {
   cp -- "$NODES_PM" "$node_test"
   cp -- "$MANAGER_JS" "$js_test"
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
-    if ! perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "no match\n"' "$node_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
+    if ! insert_nodes_summary "$node_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
       rm -f "$node_test" "$js_test" "$block"
       die '当前 PVE 的 Nodes.pm 与脚本不兼容；未修改任何文件。请提交 pveversion 附近的代码后再适配。'
     fi
@@ -314,6 +314,11 @@ preflight_overview_compatibility() {
   fi
   rm -f "$node_test" "$js_test" "$block"
   info '概要信息兼容性预检通过：实际文件可完成后端与前端插入。'
+}
+
+insert_nodes_summary() {
+  local target="$1"
+  perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "pveversion assignment not found\n"' "$target"
 }
 
 write_overview_js_block() {
@@ -345,15 +350,19 @@ insert_after_pveversion() {
 
 apply_overview() {
   [[ -f "$NODES_PM" && -f "$MANAGER_JS" ]] || die '未找到 PVE 前端文件。'
-  configure_overview || return 0
+  overview_load
   preflight_overview_compatibility
+  configure_overview || return 0
   begin_transaction overview
   backup "$NODES_PM"; backup "$MANAGER_JS"
   schedule_ui_rollback 'overview installation'
   write_summary_helper
 
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$NODES_PM"; then
-    perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "PVE_SENSIBLE: Nodes.pm insertion point not found\n"' "$NODES_PM"
+    if ! insert_nodes_summary "$NODES_PM"; then
+      "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+      die 'Nodes.pm 插入失败，原始文件已恢复。'
+    fi
   fi
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$MANAGER_JS"; then
     local block
@@ -472,12 +481,17 @@ set_ct_template_source() {
   confirm "将 CT 模板下载地址改为 $MIRROR_NAME 吗？PVE 软件包更新可能覆盖此修改。" || return 0
   begin_transaction ct-template
   backup "$apl"
-  if ! perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.(?:tuna\.tsinghua\.edu\.cn|ustc\.edu\.cn))/proxmox(?=/|[\x27\"])}{'"$CT_URI"'}g' "$apl"; then
+  if ! replace_ct_source "$apl" "$CT_URI"; then
     restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"
     die 'CT 模板源定位失败；原文件已恢复。'
   fi
   grep -qF "$CT_URI" "$apl" || { restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"; die 'CT 模板源定位失败；原文件已恢复。'; }
   info "CT 模板源已改为 $MIRROR_NAME。执行 pveam update 后生效；PVE 更新后可通过备份记录重新应用。"
+}
+
+replace_ct_source() {
+  local target="$1" replacement="$2"
+  CT_REPLACEMENT="$replacement" perl -0777 -i -pe 's{https?://(?:download\.proxmox\.com|mirrors\.tuna\.tsinghua\.edu\.cn/proxmox|mirrors\.ustc\.edu\.cn/proxmox)(?=/|[\x27\"])}{$ENV{CT_REPLACEMENT}}g' "$target"
 }
 
 set_sources() {
@@ -626,12 +640,27 @@ PVE 简洁维护工具（PVE 9）
 EOF
     read -r -p '请选择：' choice
     case "$choice" in
-      1) apply_overview ;; 2) set_sources ;; 3) disable_subscription_popup ;;
-      4) set_ipv6_slaac ;; 5) passthrough_wizard ;; 6) restore_latest_ui ;;
+      1) run_menu_action '概要信息定制' apply_overview ;;
+      2) run_menu_action '软件源配置' set_sources ;;
+      3) run_menu_action '关闭订阅弹窗' disable_subscription_popup ;;
+      4) run_menu_action 'SLAAC IPv6' set_ipv6_slaac ;;
+      5) run_menu_action 'PCI 直通 / IOMMU' passthrough_wizard ;;
+      6) run_menu_action '恢复 PVE UI' restore_latest_ui ;;
       0) exit 0 ;; *) printf '无效选择。\n' ;;
     esac
   done
 }
 
-need_root; need_pve9; menu
+run_menu_action() {
+  local label="$1"; shift
+  if ! ( "$@" ); then
+    printf '\n[%s] 操作未完成，已返回主菜单；请查看上方错误信息。\n' "$label" >&2
+  fi
+}
+
+if [[ "${PVE_SENSIBLE_LIB_ONLY:-0}" != 1 ]]; then
+  need_root
+  need_pve9
+  menu
+fi
 
