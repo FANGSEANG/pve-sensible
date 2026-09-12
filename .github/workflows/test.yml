@@ -24,13 +24,19 @@ jobs:
         shell: bash
         run: |
           test_file=$(mktemp)
+          block=$(mktemp)
           cat > "$test_file" <<'EOF'
           {
-              itemId: 'pveversion',
+              itemId: 'version',
               title: gettext('PVE Manager Version'),
+              textField: 'pveversion',
+              value: '',
           },
           EOF
-          perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n}s or die "no match\n"' "$test_file"
+          printf '%s\n' '// PVE_SENSIBLE_OVERVIEW' > "$block"
+          line=$(awk '/textField:[[:space:]]*[\x27\"]pveversion[\x27\"]/{found=1} found && /^[[:space:]]*},[[:space:]]*$/{print NR; exit}' "$test_file")
+          test "$line" = 5
+          sed -i "${line}r $block" "$test_file"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
       - name: Validate CT template mirror replacement matcher
         shell: bash
@@ -47,9 +53,24 @@ jobs:
         run: |
           test_file=$(mktemp)
           cat > "$test_file" <<'EOF'
-          Ext.Msg.show({ title: gettext('No valid subscription') });
+          Proxmox.Utils.API2Request({
+              url: '/nodes/localhost/subscription',
+              success: function(response) {
+                  let res = response.result;
+                  if (res === null || res === undefined || !res || res.data.status.toLowerCase() !== 'active') {
+                      Ext.Msg.show({ title: gettext('No valid subscription') });
+                  }
+              },
+          });
           EOF
-          perl -0777 -i -pe 's~(Ext\.Msg\.show)(\(\{\s*title:\s*gettext\([\x27\"]No valid subscription)~Ext.emptyFn /* PVE_SENSIBLE_NO_SUBSCRIPTION */$2~s' "$test_file"
+          sed -r -i '/\/nodes\/localhost\/subscription/,+30 {
+            /^\s+if\s*\(/ {
+                :loop
+                N
+                /\s*\)\s*\{/!b loop
+                s/(if\s*\([[:space:]]*res\s*===\s*null\s*(\|\|\s*res\s*===\s*undefined\s*)?(\|\|\s*!res\s*)?(\|\|\s*res\.data\.status\.toLowerCase\(\)\s*!==\s*[\x27\"]active[\x27\"]\s*)?[[:space:]]*\)\s*\{)/if(false){ \/\/ PVE_SENSIBLE_NO_SUBSCRIPTION/
+            }
+          }' "$test_file"
           grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"
-          grep -q 'Ext.emptyFn' "$test_file"
+          grep -q 'if(false)' "$test_file"
 
