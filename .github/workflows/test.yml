@@ -1,0 +1,35 @@
+name: Shell checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Bash syntax
+        run: bash -n pve-sensible.sh
+      - name: Validate PVE 9.2 version assignment matcher
+        shell: bash
+        run: |
+          test_file=$(mktemp)
+          cat > "$test_file" <<'EOF'
+              $res->{pveversion} = PVE::pvecfg::package() . "/" . PVE::pvecfg::version_text();
+          EOF
+          perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "no match\n"' "$test_file"
+          grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
+      - name: Validate PVE Manager overview insertion matcher
+        shell: bash
+        run: |
+          test_file=$(mktemp)
+          cat > "$test_file" <<'EOF'
+          {
+              itemId: 'pveversion',
+              title: gettext('PVE Manager Version'),
+          },
+          EOF
+          perl -0777 -i -pe 's{(itemId:\s*[\x27\"]pveversion[\x27"][\s\S]{0,1000}?\n\s*\},)}{$1\n\t\t// PVE_SENSIBLE_OVERVIEW\n}s or die "no match\n"' "$test_file"
+          grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
+
