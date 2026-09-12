@@ -178,29 +178,45 @@ set_ipv6_slaac() {
   ip -6 addr show dev vmbr0 scope global || true
 }
 
-set_sources_tuna() {
-  local codename debian=/etc/apt/sources.list.d/debian.sources pve=/etc/apt/sources.list.d/pve-no-subscription.sources enterprise=/etc/apt/sources.list.d/pve-enterprise.sources
+set_sources() {
+  local codename mirror debian_uri security_uri pve_uri debian=/etc/apt/sources.list.d/debian.sources pve=/etc/apt/sources.list.d/pve-no-subscription.sources enterprise=/etc/apt/sources.list.d/pve-enterprise.sources
   codename=$(. /etc/os-release; printf '%s' "$VERSION_CODENAME")
   [[ "$codename" == trixie ]] || die "Expected Debian trixie for PVE 9, found: $codename"
-  confirm 'Replace Debian and PVE repository definitions with Tsinghua mirror settings?' || return 0
+  cat <<'EOF'
+
+Select repository set (all choices use PVE no-subscription, not enterprise):
+  1) Tsinghua TUNA mirror
+  2) USTC mirror
+  3) Official Debian + Proxmox repositories
+  0) Cancel
+EOF
+  read -r -p 'Choose: ' mirror
+  case "$mirror" in
+    1) debian_uri=https://mirrors.tuna.tsinghua.edu.cn/debian; security_uri=https://security.debian.org/debian-security; pve_uri=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve ;;
+    2) debian_uri=https://mirrors.ustc.edu.cn/debian; security_uri=https://mirrors.ustc.edu.cn/debian-security; pve_uri=https://mirrors.ustc.edu.cn/proxmox/debian/pve ;;
+    3) debian_uri=https://deb.debian.org/debian; security_uri=https://security.debian.org/debian-security; pve_uri=http://download.proxmox.com/debian/pve ;;
+    0) return 0 ;;
+    *) die 'Invalid repository selection.' ;;
+  esac
+  confirm "Replace Debian and PVE repository definitions with the selected repository set?" || return 0
   begin_transaction sources
   backup "$debian"; backup "$pve"; backup "$enterprise"
   cat >"$debian" <<EOF
 Types: deb
-URIs: https://mirrors.tuna.tsinghua.edu.cn/debian
+URIs: $debian_uri
 Suites: trixie trixie-updates trixie-backports
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 
 Types: deb
-URIs: https://security.debian.org/debian-security
+URIs: $security_uri
 Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
   cat >"$pve" <<EOF
 Types: deb
-URIs: https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve
+URIs: $pve_uri
 Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
@@ -284,7 +300,7 @@ PVE Sensible (PVE 9)
 EOF
     read -r -p 'Choose: ' choice
     case "$choice" in
-      1) apply_overview ;; 2) set_sources_tuna ;; 3) disable_subscription_popup ;;
+      1) apply_overview ;; 2) set_sources ;; 3) disable_subscription_popup ;;
       4) set_ipv6_slaac ;; 5) passthrough_status ;; 6) enable_iommu ;; 7) restore_latest_ui ;;
       8) install_ups_support ;;
       0) exit 0 ;; *) printf 'Invalid choice.\n' ;;
