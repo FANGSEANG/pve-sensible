@@ -142,8 +142,22 @@ overview_preset() {
     q) CPU_FREQ=1; CPU_LIMITS=0; CPU_GOVERNOR=0; CPU_POWER=0; CPU_TEMP=1; CPU_CORE_TEMP=0; UPS_INFO=1; DISK_BASE=1; DISK_POWER=0; DISK_IO=0 ;;
   esac
 }
+overview_selected() {
+  local items=()
+  [[ "$CPU_FREQ" == 1 ]] && items+=('CPU 实时主频')
+  [[ "$CPU_LIMITS" == 1 ]] && items+=('CPU 最小/最大主频')
+  [[ "$CPU_GOVERNOR" == 1 ]] && items+=('CPU 工作模式')
+  [[ "$CPU_POWER" == 1 ]] && items+=('CPU 功率')
+  [[ "$CPU_TEMP" == 1 ]] && items+=('CPU 温度')
+  [[ "$CPU_CORE_TEMP" == 1 ]] && items+=('CPU 核心温度')
+  [[ "$UPS_INFO" == 1 ]] && items+=('UPS 信息')
+  [[ "$DISK_BASE" == 1 ]] && items+=('NVMe 基础/寿命')
+  [[ "$DISK_POWER" == 1 ]] && items+=('NVMe 通电信息')
+  [[ "$DISK_IO" == 1 ]] && items+=('NVMe IO 信息')
+  (IFS='、'; printf '%s' "${items[*]}")
+}
 configure_overview() {
-  local choices c
+  local choices c action
   overview_load
   while true; do
     cat <<EOF
@@ -160,7 +174,9 @@ $(mark "$DISK_BASE") a) NVMe 基础信息与寿命（需要 smartmontools）
 $(mark "$DISK_POWER") b) NVMe 通电信息（依赖 a）
 $(mark "$DISK_IO") c) NVMe IO 信息（依赖 a）
 
-o) 推荐方案一：高大全    p) 推荐方案二：精简    q) 推荐方案三：极简
+o) 高大全：全部启用（含功率、核心温度、通电、IO）
+p) 精简：实时/最小最大频率、工作模式、CPU 温度、UPS、NVMe 基础
+q) 极简：实时频率、CPU 温度、UPS、NVMe 基础
 x) 恢复默认精简方案       s) 跳过本次修改
 EOF
     read -r -p '选择后按 Enter 应用：' choices
@@ -178,6 +194,10 @@ EOF
       esac
     done
     [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
+    printf '\n本次概要预览：%s\n' "$(overview_selected)"
+    read -r -p '按 Enter 确认应用；输入 r 返回继续调整；输入 s 取消：' action
+    [[ "$action" == r || "$action" == R ]] && continue
+    [[ "$action" == s || "$action" == S ]] && return 1
     overview_save
     if [[ "$UPS_INFO" == 1 ]] && ! command -v apcaccess >/dev/null 2>&1; then
       install_ups_support
