@@ -417,7 +417,7 @@ jobs:
         run: |
           bindir=$(mktemp -d)
           log=$(mktemp)
-          PVE_SENSIBLE_RUN_DIR="$bindir/run" PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          PVE_SENSIBLE_STATE_DIR="$bindir/state" PVE_SENSIBLE_RUN_DIR="$bindir/run" PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           cat > "$bindir/systemd-run" <<'EOF'
           #!/bin/sh
           printf 'run %s\n' "$*" >> "$MOCK_LOG"
@@ -432,7 +432,7 @@ jobs:
           EOF
           chmod +x "$bindir/systemd-run" "$bindir/systemctl"
           write_rollback_helper() { :; }
-          CURRENT_BACKUP_DIR=/tmp/safe-backup-fixture
+          CURRENT_BACKUP_DIR="$STATE_DIR/backups/safe-backup-fixture"
           MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback test
           unit="$CURRENT_ROLLBACK_UNIT"
           if (MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback second); then
