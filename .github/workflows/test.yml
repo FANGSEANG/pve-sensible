@@ -23,6 +23,20 @@ jobs:
         run: |
           command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
           shellcheck -x pve-sensible.sh
+      - name: Validate y/N confirmation helper
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          printf 'y\n' | confirm 'test'
+          printf 'Y\n' | confirm 'test'
+          if printf 'n\n' | confirm 'test'; then
+            echo 'n must cancel confirmation' >&2
+            exit 1
+          fi
+          if printf '\n' | confirm 'test'; then
+            echo 'empty input must default to cancellation' >&2
+            exit 1
+          fi
       - name: Validate PVE 9.2 version assignment matcher
         shell: bash
         run: |
@@ -398,12 +412,12 @@ jobs:
           test "$(grep -cxF vfio_pci "$modules")" = 1
           printf '%s\n' 'GRUB_TIMEOUT=5' > "$grub.invalid"
           ! prepare_iommu_files "$grub.invalid" "$modules" 'intel_iommu=on iommu=pt'
-      - name: Validate unique rollback timer and KEEP cancellation
+      - name: Validate persistent rollback confirmation after Web Shell reconnect
         shell: bash
         run: |
-          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           bindir=$(mktemp -d)
           log=$(mktemp)
+          PVE_SENSIBLE_RUN_DIR="$bindir/run" PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
           cat > "$bindir/systemd-run" <<'EOF'
           #!/bin/sh
           printf 'run %s\n' "$*" >> "$MOCK_LOG"
@@ -411,15 +425,25 @@ jobs:
           cat > "$bindir/systemctl" <<'EOF'
           #!/bin/sh
           printf 'ctl %s\n' "$*" >> "$MOCK_LOG"
+          if [ "$1" = is-active ]; then
+            case "$3" in *.timer) exit 0 ;; *) exit 1 ;; esac
+          fi
+          exit 0
           EOF
           chmod +x "$bindir/systemd-run" "$bindir/systemctl"
           write_rollback_helper() { :; }
           CURRENT_BACKUP_DIR=/tmp/safe-backup-fixture
           MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback test
-          first="$CURRENT_ROLLBACK_UNIT"
-          sleep 1
-          MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback test
-          second="$CURRENT_ROLLBACK_UNIT"
-          test "$first" != "$second"
-          printf 'KEEP\n' | MOCK_LOG="$log" PATH="$bindir:$PATH" keep_ui_changes
-          grep -q "ctl stop $second.timer $second.service" "$log"
+          unit="$CURRENT_ROLLBACK_UNIT"
+          if (MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback second); then
+            echo 'a second UI rollback timer must be rejected while one is pending' >&2
+            exit 1
+          fi
+          test "$(sed -n '1p' "$PENDING_UI_FILE")" = "$unit"
+          test "$(sed -n '2p' "$PENDING_UI_FILE")" = "$CURRENT_BACKUP_DIR"
+          mkdir -p "$CURRENT_BACKUP_DIR"
+          printf 'y\n' | MOCK_LOG="$log" PATH="$bindir:$PATH" confirm_keep_ui_changes
+          grep -q "ctl is-active --quiet $unit.timer" "$log"
+          grep -q "ctl stop -- $unit.timer" "$log"
+          grep -q "ctl is-active --quiet $unit.service" "$log"
+          test ! -e "$PENDING_UI_FILE"
