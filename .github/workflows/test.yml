@@ -172,6 +172,23 @@ jobs:
           disable_subscription_in_file "$test_file"
           test "$(grep -c PVE_SENSIBLE_NO_SUBSCRIPTION "$test_file")" = 1
           node --check "$test_file"
+      - name: Validate subscription patch against official PVE 9 toolkit
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          root=$(mktemp -d)
+          deb="$root/proxmox-widget-toolkit_5.2.8_all.deb"
+          curl --fail --location --retry 3 --output "$deb" \
+            http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/proxmox-widget-toolkit_5.2.8_all.deb
+          printf '%s  %s\n' '57949c2c71ae574aba4dab7fe48b30bb7db8dea7548624eff14aedcd4735f9bc' "$deb" | sha256sum --check
+          dpkg-deb --extract "$deb" "$root/package"
+          toolkit="$root/package/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+          test -f "$toolkit"
+          grep -q 'No valid subscription' "$toolkit"
+          disable_subscription_in_file "$toolkit"
+          test "$(grep -c PVE_SENSIBLE_NO_SUBSCRIPTION "$toolkit")" = 1
+          subscription_popup_disabled_in_file "$toolkit"
+          node --check "$toolkit"
       - name: Validate failed menu actions do not terminate caller
         shell: bash
         run: |
