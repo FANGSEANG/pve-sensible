@@ -6,15 +6,17 @@
 
 ## 概览排版
 
-“硬件状态”使用一个跨两列、左对齐的字段，避免长文本在 PVE 原生两列中错位。进入菜单 1 后可逐项选择 CPU 实时/最小最大频率、工作模式、功耗、CPU/核心温度、UPS、NVMe 基础/通电/IO 信息，也可使用“高大全、精简、极简”预设。
+“硬件状态”使用一个跨两列的字段，避免长文本被 PVE 原生标签列挤压；可选择居左、居右、居中或平铺。进入菜单 1 后可逐项选择 CPU 实时/最小最大/各线程频率、工作模式、功耗、CPU/核心/核显温度、风扇转速、UPS、NVMe 基础/通电/IO 信息，也可使用“高大全、精简、极简”预设。
 
 默认是精简方案：实时/最小最大频率、工作模式、CPU 温度、UPS 和 NVMe 基础信息。核心温度和逐项 IO 信息默认关闭，因为核心数多或磁盘多时会明显拉长概要页。
 
 预设的具体内容：`o` 高大全为所有项目；`p` 精简为实时/最小最大频率、工作模式、CPU 温度、UPS、NVMe 基础；`q` 极简为实时频率、CPU 温度、UPS、NVMe 基础。输入预设或项目编号后，菜单会重新显示并以 `[*]` 标出最终选择；直接按 Enter 才会实际应用。
 
-这会修改 PVE 的 `Nodes.pm` 与 `pvemanagerlib.js`。脚本会先备份到 `/var/lib/pve-sensible/backups/<时间戳>/`，并在重启 `pveproxy` 前执行 `perl -c` 校验。
+这会修改 PVE 的 `Nodes.pm` 与 `pvemanagerlib.js`。脚本会先备份到 `/var/lib/pve-sensible/backups/<时间戳>/`，并在重启 `pveproxy` 前执行 `perl -c` 校验。传感器、UPS、SMART、IO 和功耗读取均设有超时，避免异常硬件命令长期拖住概要 API。
 
-更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 并检查服务后，会要求你在 SSH 会话里输入 `KEEP`；只有确认浏览器页面正常，才会取消自动回退。没有输入 `KEEP`、断开 SSH，或页面无法打开时，原始 UI 文件会自行恢复。菜单第 6 项也可手动恢复最近一次 UI 备份。
+如果检测到旧版 `pve_source` 已加入的 `$cpumodes`、`$cpupowers`、`$cpufreqs` 等代码，脚本不会继续叠加。只有输入 `MIGRATE` 后，才会从当前已安装的 **完全相同版本** `pve-manager` 安装包中提取两份原版文件，再安装本项目的概要区块；它不会执行软件包重装。下载不到相同版本时会在修改 UI 前终止。
+
+更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 后会检查服务状态及本机 8006 API，再要求你在 SSH 会话里输入 `KEEP`；只有确认浏览器页面正常，才会取消自动回退。没有输入 `KEEP`、断开 SSH，或页面无法打开时，原始 UI 文件会自行恢复。菜单第 6 项也可分别恢复 UI、软件源、IPv6、CT 模板源或 IOMMU 配置。
 
 PVE 包升级可能覆盖修改；之后重新执行“安装概览”即可。
 
@@ -44,7 +46,7 @@ ip -6 addr show dev vmbr0 scope global
 
 菜单第 2 项将五类来源拆开：Debian、PVE 企业源、PVE 无订阅源、Ceph 无订阅源、CT 模板下载源；每项可选择清华 TUNA、中科大 USTC 或官方源。
 
-Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验证；验证失败会立即恢复本次涉及的文件，且不会自动执行系统升级。企业源仅被注释，不会删除。Ceph 仅在检测到已有 Ceph 配置或已安装 Ceph 软件包时才允许写入，防止普通 PVE 节点误加源。CT 模板源会修改 `PVE/APLInfo.pm`，不运行 `apt update`；该文件可能被 PVE 更新覆盖，脚本会备份并提示使用 `pveam update` 刷新模板列表。
+Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验证；验证失败会立即恢复本次涉及的文件，且不会自动执行系统升级。企业源仅被注释，不会删除。Ceph 仅在检测到已有 Ceph 配置或已安装 Ceph 软件包时才允许写入，防止普通 PVE 节点误加源。CT 模板源会修改 `PVE/APLInfo.pm` 并执行 `pveam update` 验证；刷新失败会恢复原文件。该文件可能被 PVE 更新覆盖。
 
 ## 直通
 
@@ -58,7 +60,7 @@ Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验
 wget -qO /root/pve-sensible.sh https://raw.githubusercontent.com/FANGSEANG/pve-sensible/main/pve-sensible.sh && chmod 700 /root/pve-sensible.sh && /root/pve-sensible.sh
 ```
 
-它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。首次使用建议先选择菜单 `1`，确认浏览器页面正常后在 SSH 会话输入 `KEEP`。
+它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。你的主机如果已经运行过旧版 `pve_source` 概要功能，菜单 1 会先提示安全迁移。确认浏览器页面正常后，必须在 SSH 会话输入大写 `KEEP`；否则 3 分钟后恢复操作前的 UI。
 
 后续再次打开菜单，直接执行：
 
@@ -75,14 +77,15 @@ chmod +x pve-sensible.sh
 sudo ./pve-sensible.sh
 ```
 
-## 设计参考
+## 验证与设计参考
 
-- `pve_source` 的 PVE 概览信息定制思路；本项目未直接执行其全功能脚本。
-- ZhiChao 的 PVE 9 文档中经实测的 `vmbr0` `accept_ra=2` SLAAC 思路。
+- `pve_source` 的 PVE 概览菜单与交互。公开下载物是编译后的 ELF 程序，本项目没有把它当作可审计源码，也没有执行它。
+- `pve-diy` 的 PVE 9 前端定位思路，并重新加入兼容预检、范围限制和回退。
+- PVE-Tools-9 的功能分类；没有采用其 NUT、存储重分配、内核删除等高风险功能。
+- ZhiChao 的 PVE 9 DEB822 软件源、CT 模板源和 `vmbr0 accept_ra=2` SLAAC 方案。
 
-项目将这两部分拆开，并增加了 UI 改动的自动回退机制。
+GitHub Actions 会对真实函数执行语法、概要后端/前端插入、旧补丁识别、四种对齐更新、`o` 后回车应用、订阅弹窗、五类源文件生成与失败恢复、IPv6、IOMMU 幂等、备份清单恢复和自动回退计时器测试。它能显著降低脚本错误风险，但不能模拟你的 BIOS、UPS 型号、传感器驱动、镜像网络或全部 PVE 实机状态。
 
 ## 免责声明
 
 这不是 Proxmox 官方工具。任何改动 PVE 前端或软件源的操作都应先有可用备份和本机控制台；在生产集群中请先于单节点测试。
-
