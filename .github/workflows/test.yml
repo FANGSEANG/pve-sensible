@@ -301,6 +301,9 @@ jobs:
           output=$(printf 'o\n\n' | configure_overview)
           grep -qF '[*] o) 高大全' <<< "$output"
           grep -qx '1111111110111r' "$result"
+          output=$(printf 'o9\n\n' | configure_overview)
+          grep -qF '[*] 9) UPS 信息' <<< "$output"
+          grep -qx '1111111111111r' "$result"
       - name: Validate DEB822 source writers
         shell: bash
         run: |
