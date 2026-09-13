@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 readonly APP="pve-sensible"
-readonly STATE_DIR="/var/lib/${APP}"
+readonly STATE_DIR="${PVE_SENSIBLE_STATE_DIR:-/var/lib/${APP}}"
 readonly LIB_DIR="/usr/local/lib/${APP}"
 readonly SUMMARY_HELPER="${LIB_DIR}/summary.sh"
 readonly OVERVIEW_CONF="/etc/pve-sensible/overview.conf"
