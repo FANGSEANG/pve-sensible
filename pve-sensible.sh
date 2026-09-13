@@ -525,7 +525,7 @@ update_overview_alignment() {
 insert_after_pveversion() {
   local target="$1" block="$2" line
   # Same anchoring approach as pve-diy: locate pveversion, then its object end.
-  line=$(awk '/textField:[[:space:]]*[\x27\"]pveversion[\x27\"]/{found=1} found && /^[[:space:]]*},[[:space:]]*$/{print NR; exit}' "$target")
+  line=$(awk '/textField:[[:space:]]*[\047"]pveversion[\047"]/{found=1} found && /^[[:space:]]*},[[:space:]]*$/{print NR; exit}' "$target")
   [[ "$line" =~ ^[0-9]+$ ]] || return 1
   sed -i "${line}r $block" "$target"
 }
