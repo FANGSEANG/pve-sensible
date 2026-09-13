@@ -243,9 +243,6 @@ EOF
       overview_save
       return 0
     fi
-    [[ "$choices" == s ]] && return 1
-    [[ "$choices" == o || "$choices" == p || "$choices" == q ]] && overview_preset "$choices"
-    [[ "$choices" == x ]] && overview_defaults
     for ((i=0; i<${#choices}; i++)); do
       c=${choices:i:1}
       case "$c" in
@@ -254,6 +251,7 @@ EOF
         5) CPU_TEMP=$(toggle "$CPU_TEMP") ;; 6) CPU_CORE_TEMP=$(toggle "$CPU_CORE_TEMP") ;; 7) IGPU_TEMP=$(toggle "$IGPU_TEMP") ;; 8) FAN_SPEED=$(toggle "$FAN_SPEED") ;;
         9) UPS_INFO=$(toggle "$UPS_INFO") ;; a) DISK_BASE=$(toggle "$DISK_BASE") ;;
         b) DISK_POWER=$(toggle "$DISK_POWER") ;; c) DISK_IO=$(toggle "$DISK_IO") ;; l|r|m|j) OVERVIEW_ALIGN="$c" ;;
+        o|p|q) overview_preset "$c" ;; x) overview_defaults ;; s) return 1 ;;
       esac
     done
     [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
