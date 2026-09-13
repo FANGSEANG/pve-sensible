@@ -16,6 +16,13 @@ jobs:
             exit 1
           fi
           bash -n pve-sensible.sh
+          grep -q -- '--num_iterations 1' pve-sensible.sh
+          grep -q 'timeout 3s apcaccess' pve-sensible.sh
+          grep -q 'timeout 4s smartctl' pve-sensible.sh
+      - name: Run ShellCheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck -x pve-sensible.sh
       - name: Validate PVE 9.2 version assignment matcher
         shell: bash
         run: |
@@ -33,18 +40,81 @@ jobs:
           test_file=$(mktemp)
           block=$(mktemp)
           cat > "$test_file" <<'EOF'
+          const items = [
           {
               itemId: 'version',
               title: gettext('PVE Manager Version'),
               textField: 'pveversion',
               value: '',
           },
+          ];
           EOF
           OVERVIEW_ALIGN=r
           write_overview_js_block "$block"
           insert_after_pveversion "$test_file" "$block"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
           grep -q "textAlign: 'right'" "$test_file"
+          node --check "$test_file"
+          OVERVIEW_ALIGN=m
+          update_overview_alignment "$test_file"
+          grep -q "textAlign: 'center'" "$test_file"
+          test "$(grep -c PVE_SENSIBLE_OVERVIEW "$test_file")" = 2
+          node --check "$test_file"
+      - name: Validate legacy pve_source detection
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          nodes=$(mktemp)
+          manager=$(mktemp)
+          printf '%s\n' '$res->{pveversion} = PVE::pvecfg::version_text();' > "$nodes"
+          printf '%s\n' "textField: 'pveversion'," > "$manager"
+          ! legacy_overview_detected "$nodes" "$manager"
+          cat >> "$nodes" <<'EOF'
+          my $cpumodes = `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`;
+          my $cpupowers = `turbostat -S -q -s PkgWatt -i 0.1 -n 1 -c package`;
+          my $cpufreqs = `lscpu | grep MHz`;
+          EOF
+          legacy_overview_detected "$nodes" "$manager"
+      - name: Validate exact-version pristine pve-manager extraction
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          root=$(mktemp -d)
+          package_root="$root/package"
+          cache="$root/cache"
+          destination="$root/destination"
+          bindir="$root/bin"
+          mkdir -p "$package_root/DEBIAN" "$package_root/usr/share/perl5/PVE/API2" "$package_root/usr/share/pve-manager/js" "$cache" "$destination" "$bindir"
+          cat > "$package_root/DEBIAN/control" <<'EOF'
+          Package: pve-manager
+          Version: 9.2.18-fixture
+          Architecture: all
+          Maintainer: CI
+          Description: fixture
+          EOF
+          cat > "$package_root/usr/share/perl5/PVE/API2/Nodes.pm" <<'EOF'
+          package PVE::API2::Nodes;
+          $res->{pveversion} = 'fixture';
+          1;
+          EOF
+          cat > "$package_root/usr/share/pve-manager/js/pvemanagerlib.js" <<'EOF'
+          const items = [{
+              textField: 'pveversion',
+          }];
+          EOF
+          dpkg-deb --build "$package_root" "$cache/pve-manager_fixture.deb" >/dev/null
+          cat > "$bindir/dpkg-query" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            -S) printf '%s\n' 'pve-manager: fixture' ;;
+            -W) printf '%s' '9.2.18-fixture' ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod +x "$bindir/dpkg-query"
+          PVE_SENSIBLE_APT_CACHE="$cache" PATH="$bindir:$PATH" extract_pristine_pve_manager "$destination"
+          grep -q "pveversion} = 'fixture'" "$destination/root/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -q "textField: 'pveversion'" "$destination/root/usr/share/pve-manager/js/pvemanagerlib.js"
       - name: Validate CT template mirror replacement matcher
         shell: bash
         run: |
@@ -75,6 +145,9 @@ jobs:
           disable_subscription_in_file "$test_file"
           grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"
           grep -q 'if(false)' "$test_file"
+          disable_subscription_in_file "$test_file"
+          test "$(grep -c PVE_SENSIBLE_NO_SUBSCRIPTION "$test_file")" = 1
+          node --check "$test_file"
       - name: Validate failed menu actions do not terminate caller
         shell: bash
         run: |
@@ -82,3 +155,152 @@ jobs:
           fail_action() { die 'expected test failure'; }
           run_menu_action '测试操作' fail_action
           echo 'menu continues'
+      - name: Validate generated summary helper
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          helper=$(mktemp)
+          write_summary_helper "$helper"
+          bash -n "$helper"
+          "$helper" | grep -q '^CPU：'
+      - name: Validate overview presets and dependencies
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          overview_defaults
+          overview_preset o
+          test "$CPU_POWER$CPU_CORE_TEMP$DISK_POWER$DISK_IO$UPS_INFO$OVERVIEW_ALIGN" = 11110r
+          overview_preset p
+          test "$CPU_FREQ$CPU_LIMITS$CPU_GOVERNOR$CPU_TEMP$UPS_INFO$DISK_BASE$DISK_IO$OVERVIEW_ALIGN" = 1111110l
+          overview_preset q
+          test "$CPU_FREQ$CPU_LIMITS$CPU_GOVERNOR$CPU_TEMP$UPS_INFO$DISK_BASE$OVERVIEW_ALIGN" = 100111l
+      - name: Validate interactive o preset then Enter applies
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          result=$(mktemp)
+          overview_load() { overview_defaults; }
+          install_overview_dependencies() { :; }
+          overview_save() { printf '%s\n' "$CPU_FREQ$CPU_LIMITS$CPU_THREAD$CPU_GOVERNOR$CPU_POWER$CPU_TEMP$CPU_CORE_TEMP$IGPU_TEMP$FAN_SPEED$UPS_INFO$DISK_BASE$DISK_POWER$DISK_IO$OVERVIEW_ALIGN" > "$result"; }
+          output=$(printf 'o\n\n' | configure_overview)
+          grep -qF '[*] o) 高大全' <<< "$output"
+          grep -qx '1111111110111r' "$result"
+      - name: Validate DEB822 source writers
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          tmpdir=$(mktemp -d)
+          DEBIAN_URI=https://mirrors.tuna.tsinghua.edu.cn/debian
+          SECURITY_URI=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+          PVE_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve
+          CEPH_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/ceph-squid
+          printf '%s\n' 'Types: deb' 'URIs: https://enterprise.proxmox.com/debian/pve' > "$tmpdir/enterprise.sources"
+          write_debian_source "$tmpdir/debian.sources"
+          write_pve_sources "$tmpdir/pve.sources" "$tmpdir/enterprise.sources"
+          write_ceph_source "$tmpdir/ceph.sources"
+          grep -q '^Suites: trixie trixie-updates trixie-backports$' "$tmpdir/debian.sources"
+          grep -q '^Suites: trixie-security$' "$tmpdir/debian.sources"
+          grep -q '^Components: pve-no-subscription$' "$tmpdir/pve.sources"
+          grep -q '^# URIs: https://enterprise.proxmox.com' "$tmpdir/enterprise.sources"
+          grep -q '/ceph-squid$' "$tmpdir/ceph.sources"
+          grep -q '^Components: no-subscription$' "$tmpdir/ceph.sources"
+      - name: Validate source failure rollback
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          tmpdir=$(mktemp -d)
+          bindir=$(mktemp -d)
+          target="$tmpdir/debian.sources"
+          backup_dir="$tmpdir/backup"
+          mkdir "$backup_dir"
+          printf '%s\n' original > "$backup_dir/debian.sources"
+          printf '%s\n' changed > "$target"
+          printf '#!/bin/sh\nexit 1\n' > "$bindir/apt-get"
+          chmod +x "$bindir/apt-get"
+          if (PATH="$bindir:$PATH" validate_apt_or_restore "$backup_dir" "$target"); then
+            echo 'expected apt validation failure' >&2
+            exit 1
+          fi
+          grep -qx original "$target"
+      - name: Validate manifest restore including originally absent files
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          root=$(mktemp -d)
+          backup_dir="$root/backup"
+          mkdir "$backup_dir"
+          present="$root/present.conf"
+          absent="$root/absent.conf"
+          printf '%s\n' original > "$backup_dir/present.conf"
+          printf 'present\t%s\nabsent\t%s\n' "$present" "$absent" > "$backup_dir/manifest.tsv"
+          printf '%s\n' changed > "$present"
+          printf '%s\n' newly-created > "$absent"
+          PVE_SENSIBLE_TEST_ROOT="$root" restore_recorded_backup "$backup_dir"
+          grep -qx original "$present"
+          test ! -e "$absent"
+      - name: Validate IPv6 SLAAC placement and refusal
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          interfaces=$(mktemp)
+          cat > "$interfaces" <<'EOF'
+          auto lo
+          iface lo inet loopback
+
+          auto vmbr0
+          iface vmbr0 inet static
+              address 192.0.2.10/24
+              gateway 192.0.2.1
+              bridge-ports enp1s0
+
+          source /etc/network/interfaces.d/*
+          EOF
+          insert_ipv6_slaac "$interfaces"
+          test "$(grep -c PVE_SENSIBLE_SLAAC "$interfaces")" = 1
+          test "$(awk '/iface vmbr0 inet/{getline; print}' "$interfaces")" = '    post-up sysctl -qw net.ipv6.conf.vmbr0.accept_ra=2 # PVE_SENSIBLE_SLAAC'
+          cp "$interfaces" "$interfaces.duplicate"
+          insert_ipv6_slaac "$interfaces.duplicate"
+          test "$(grep -c PVE_SENSIBLE_SLAAC "$interfaces.duplicate")" = 1
+          printf '%s\n' 'iface vmbr1 inet static' > "$interfaces.missing"
+          ! insert_ipv6_slaac "$interfaces.missing"
+      - name: Validate idempotent IOMMU file preparation
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          grub=$(mktemp)
+          modules=$(mktemp)
+          printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' > "$grub"
+          prepare_iommu_files "$grub" "$modules" 'intel_iommu=on iommu=pt'
+          prepare_iommu_files "$grub" "$modules" 'intel_iommu=on iommu=pt'
+          test "$(grep -o 'intel_iommu=on' "$grub" | wc -l)" = 1
+          test "$(grep -o 'iommu=pt' "$grub" | wc -l)" = 1
+          test "$(grep -cxF vfio "$modules")" = 1
+          test "$(grep -cxF vfio_iommu_type1 "$modules")" = 1
+          test "$(grep -cxF vfio_pci "$modules")" = 1
+          printf '%s\n' 'GRUB_TIMEOUT=5' > "$grub.invalid"
+          ! prepare_iommu_files "$grub.invalid" "$modules" 'intel_iommu=on iommu=pt'
+      - name: Validate unique rollback timer and KEEP cancellation
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          bindir=$(mktemp -d)
+          log=$(mktemp)
+          cat > "$bindir/systemd-run" <<'EOF'
+          #!/bin/sh
+          printf 'run %s\n' "$*" >> "$MOCK_LOG"
+          EOF
+          cat > "$bindir/systemctl" <<'EOF'
+          #!/bin/sh
+          printf 'ctl %s\n' "$*" >> "$MOCK_LOG"
+          EOF
+          chmod +x "$bindir/systemd-run" "$bindir/systemctl"
+          write_rollback_helper() { :; }
+          CURRENT_BACKUP_DIR=/tmp/safe-backup-fixture
+          MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback test
+          first="$CURRENT_ROLLBACK_UNIT"
+          sleep 1
+          MOCK_LOG="$log" PATH="$bindir:$PATH" schedule_ui_rollback test
+          second="$CURRENT_ROLLBACK_UNIT"
+          test "$first" != "$second"
+          printf 'KEEP\n' | MOCK_LOG="$log" PATH="$bindir:$PATH" keep_ui_changes
+          grep -q "ctl stop $second.timer $second.service" "$log"
