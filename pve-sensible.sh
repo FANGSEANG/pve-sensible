@@ -518,7 +518,7 @@ update_overview_alignment() {
   end_line=$((marker_line + 18))
   count=$(sed -n "${marker_line},${end_line}p" "$target" | grep -Ec "textAlign:[[:space:]]*'(left|right|center|justify)'" || true)
   [[ "$count" == 1 ]] || return 1
-  sed -i "${marker_line},${end_line}s/textAlign:[[:space:]]*'(left\|right\|center\|justify)'/textAlign: '$align'/" "$target"
+  sed -E -i "${marker_line},${end_line}s/textAlign:[[:space:]]*'(left|right|center|justify)'/textAlign: '$align'/" "$target"
   sed -n "${marker_line},${end_line}p" "$target" | grep -q "textAlign: '$align'"
 }
 
