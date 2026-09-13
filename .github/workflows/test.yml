@@ -204,6 +204,81 @@ jobs:
           write_summary_helper "$helper"
           bash -n "$helper"
           "$helper" | grep -q '^CPU：'
+      - name: Validate all generated hardware summary collectors
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          root=$(mktemp -d)
+          helper="$root/summary.sh"
+          bindir="$root/bin"
+          block_root="$root/block"
+          mkdir -p "$bindir" "$block_root/nvme0n1/device" "$root/dev"
+          printf '%s\n' 'Fixture NVMe' > "$block_root/nvme0n1/device/model"
+          cat > "$root/overview.conf" <<'EOF'
+          CPU_FREQ=1
+          CPU_LIMITS=1
+          CPU_THREAD=1
+          CPU_GOVERNOR=0
+          CPU_POWER=1
+          CPU_TEMP=1
+          CPU_CORE_TEMP=1
+          IGPU_TEMP=1
+          FAN_SPEED=1
+          UPS_INFO=1
+          DISK_BASE=1
+          DISK_POWER=1
+          DISK_IO=1
+          EOF
+          cat > "$bindir/lscpu" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = '-e=CPU,MHZ' ]; then
+            printf '%s\n' 'CPU MHZ' '0 1500.000' '1 1600.000'
+          else
+            printf '%s\n' 'Model name: Fixture CPU' 'CPU MHz: 1500.000' 'CPU min MHz: 400.000' 'CPU max MHz: 4400.000'
+          fi
+          EOF
+          cat > "$bindir/nproc" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 2
+          EOF
+          cat > "$bindir/turbostat" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' PkgWatt 1.46
+          EOF
+          cat > "$bindir/sensors" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 'coretemp-isa-0000' 'Package id 0:  +47.0°C' 'Core 0: +45.0°C' 'Core 1: +46.0°C' 'amdgpu-pci-0000' 'edge: +40.0°C' 'fan1: 1200 RPM'
+          EOF
+          cat > "$bindir/apcaccess" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 'STATUS   : ONLINE' 'BCHARGE  : 100.0 Percent' 'TIMELEFT : 97.5 Minutes' 'LINEV    : 119.7 Volts'
+          EOF
+          cat > "$bindir/lsblk" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 1T
+          EOF
+          cat > "$bindir/smartctl" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 'Temperature:                        53 Celsius' 'Percentage Used:                    1%' 'Power On Hours:                     446'
+          EOF
+          cat > "$bindir/iostat" <<'EOF'
+          #!/bin/sh
+          printf '%s\n' 'Device r/s w/s await %%util' 'nvme0n1 1 2 0.1 0.03'
+          EOF
+          chmod +x "$bindir"/*
+          write_summary_helper "$helper"
+          output=$(PVE_SENSIBLE_OVERVIEW_CONF="$root/overview.conf" PVE_SENSIBLE_BLOCK_ROOT="$block_root" PVE_SENSIBLE_DEV_ROOT="$root/dev" PATH="$bindir:$PATH" "$helper")
+          grep -q 'Fixture CPU' <<< "$output"
+          grep -q '1.46 W' <<< "$output"
+          grep -q '核心温度：' <<< "$output"
+          grep -q '核显温度：40.0°C' <<< "$output"
+          grep -q '风扇转速：fan1: 1200' <<< "$output"
+          grep -q 'UPS：ONLINE' <<< "$output"
+          grep -q '电池 100.0 Percent' <<< "$output"
+          grep -q 'NVMe：nvme0n1 · Fixture NVMe · 容量 1T' <<< "$output"
+          grep -q '已使用 1%' <<< "$output"
+          grep -q '通电 446' <<< "$output"
+          grep -q 'IO 利用率 0.03%' <<< "$output"
       - name: Validate overview presets and dependencies
         shell: bash
         run: |
