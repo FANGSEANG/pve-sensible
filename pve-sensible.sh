@@ -54,8 +54,11 @@ write_summary_helper() {
 #!/usr/bin/env bash
 set -u
 CPU_FREQ=1; CPU_LIMITS=1; CPU_THREAD=0; CPU_GOVERNOR=1; CPU_POWER=0; CPU_TEMP=1; CPU_CORE_TEMP=0; IGPU_TEMP=0; FAN_SPEED=0
-UPS_INFO=1; DISK_BASE=1; DISK_POWER=0; DISK_IO=0; OVERVIEW_ALIGN=l
-[[ -r /etc/pve-sensible/overview.conf ]] && . /etc/pve-sensible/overview.conf
+UPS_INFO=1; DISK_BASE=1; DISK_POWER=0; DISK_IO=0
+overview_conf=${PVE_SENSIBLE_OVERVIEW_CONF:-/etc/pve-sensible/overview.conf}
+block_root=${PVE_SENSIBLE_BLOCK_ROOT:-/sys/class/block}
+dev_root=${PVE_SENSIBLE_DEV_ROOT:-/dev}
+[[ -r "$overview_conf" ]] && . "$overview_conf"
 one_line() { tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'; }
 
 model=$(lscpu | awk -F: '/Model name:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
@@ -110,12 +113,12 @@ elif [[ "$UPS_INFO" == 1 ]]; then
   printf 'UPS：未安装 apcupsd（概要配置时可选择安装；apcaccess 由该软件包提供）\n'
 fi
 
-if [[ "$DISK_BASE" == 1 ]]; then for dev in /sys/class/block/nvme*n*; do
+if [[ "$DISK_BASE" == 1 ]]; then for dev in "$block_root"/nvme*n*; do
   [[ -e "$dev" ]] || continue
   name=$(basename "$dev")
   [[ "$name" =~ ^nvme[0-9]+n[0-9]+$ ]] || continue
   model=$(cat "$dev/device/model" 2>/dev/null | one_line)
-  disk="/dev/$name"
+  disk="$dev_root/$name"
   capacity=$(lsblk -dn -o SIZE "$disk" 2>/dev/null | one_line)
   extra="${capacity:+ · 容量 $capacity}"
   if command -v smartctl >/dev/null 2>&1; then
