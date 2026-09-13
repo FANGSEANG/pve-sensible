@@ -14,6 +14,7 @@ readonly TOOLKIT_JS="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 readonly ROLLBACK_HELPER="${LIB_DIR}/rollback-ui.sh"
 readonly ROLLBACK_UNIT="pve-sensible-ui-rollback"
 CURRENT_BACKUP_DIR=''
+CURRENT_ROLLBACK_UNIT=''
 
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 info() { printf '[%s] %s\n' "$APP" "$*"; }
@@ -23,16 +24,22 @@ need_pve9() {
   pveversion | grep -q 'pve-manager/9\.' || die '本脚本目前仅支持 Proxmox VE 9。'
 }
 backup() {
-  local path="$1"
-  [[ -e "$path" ]] || return 0
+  local path="$1" manifest="$CURRENT_BACKUP_DIR/manifest.tsv"
   [[ -n "$CURRENT_BACKUP_DIR" ]] || die '内部错误：未创建本次操作的备份目录。'
-  cp -a -- "$path" "$CURRENT_BACKUP_DIR/$(basename "$path")"
-  info "已备份：$CURRENT_BACKUP_DIR/$(basename "$path")"
+  if [[ -e "$path" ]]; then
+    cp -a -- "$path" "$CURRENT_BACKUP_DIR/$(basename "$path")"
+    printf 'present\t%s\n' "$path" >>"$manifest"
+    info "已备份：$CURRENT_BACKUP_DIR/$(basename "$path")"
+  else
+    printf 'absent\t%s\n' "$path" >>"$manifest"
+    info "已记录原文件不存在：$path"
+  fi
+  chmod 0600 "$manifest"
 }
 begin_transaction() {
   local label="$1"
-  CURRENT_BACKUP_DIR="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)-$label"
-  mkdir -p "$CURRENT_BACKUP_DIR"
+  CURRENT_BACKUP_DIR="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S-%N)-$label"
+  install -d -m 0700 "$CURRENT_BACKUP_DIR"
 }
 confirm() {
   local answer
@@ -41,22 +48,22 @@ confirm() {
 }
 
 write_summary_helper() {
-  install -d -m 0755 "$LIB_DIR"
-  cat >"$SUMMARY_HELPER" <<'EOF'
+  local target="${1:-$SUMMARY_HELPER}"
+  [[ "$target" == "$SUMMARY_HELPER" ]] && install -d -m 0755 "$LIB_DIR"
+  cat >"$target" <<'EOF'
 #!/usr/bin/env bash
 set -u
 CPU_FREQ=1; CPU_LIMITS=1; CPU_THREAD=0; CPU_GOVERNOR=1; CPU_POWER=0; CPU_TEMP=1; CPU_CORE_TEMP=0; IGPU_TEMP=0; FAN_SPEED=0
 UPS_INFO=1; DISK_BASE=1; DISK_POWER=0; DISK_IO=0; OVERVIEW_ALIGN=l
 [[ -r /etc/pve-sensible/overview.conf ]] && . /etc/pve-sensible/overview.conf
 one_line() { tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'; }
-first_match() { grep -m1 -E "$1" 2>/dev/null || true; }
 
 model=$(lscpu | awk -F: '/Model name:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
 threads=$(nproc 2>/dev/null || echo '?')
 freq=$(lscpu | awk -F: '/CPU MHz:/ {gsub(/^[[:space:]]+/, "", $2); printf "%.0f MHz", $2; exit}')
 minmax=$(lscpu | awk -F: '/CPU min MHz:|CPU max MHz:/ {gsub(/^[[:space:]]+/, "", $2); printf "%s ", $2}' | xargs)
 gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true)
-power=$(command -v turbostat >/dev/null 2>&1 && turbostat --quiet --show PkgWatt --interval 0.1 2>/dev/null | tail -n1 | awk '{print $1 " W"}' || true)
+power=$(command -v turbostat >/dev/null 2>&1 && timeout 3s turbostat --quiet --show PkgWatt --interval 0.1 --num_iterations 1 2>/dev/null | tail -n1 | awk '{print $1 " W"}' || true)
 cpu_line="CPU：${model:-未知型号} · ${threads} 线程"
 [[ "$CPU_FREQ" == 1 && -n "$freq" ]] && cpu_line+=" · 实时 $freq"
 [[ "$CPU_LIMITS" == 1 && -n "$minmax" ]] && cpu_line+=" · 最小/最大 $minmax MHz"
@@ -69,26 +76,29 @@ if [[ "$CPU_THREAD" == 1 ]]; then
 fi
 
 if [[ "$CPU_TEMP" == 1 ]] && command -v sensors >/dev/null 2>&1; then
-  temps=$(sensors 2>/dev/null | awk '
+  sensor_data=$(timeout 3s sensors 2>/dev/null || true)
+  temps=$(printf '%s\n' "$sensor_data" | awk '
     /Package id 0:|Tctl:|CPU Temp:|temp1:/ {gsub(/.*\+/, ""); gsub(/°C.*/, "°C"); if ($0 != "") { print; exit } }
   ')
   [[ -n "$temps" ]] && printf '温度：CPU %s\n' "$temps"
   if [[ "$CPU_CORE_TEMP" == 1 ]]; then
-    cores=$(sensors 2>/dev/null | awk '/Core [0-9]+:/ {gsub(/.*\+/, ""); gsub(/°C.*/, "°C"); printf "%s%s", sep, $0; sep=" · "}')
+    cores=$(printf '%s\n' "$sensor_data" | awk '/Core [0-9]+:/ {gsub(/.*\+/, ""); gsub(/°C.*/, "°C"); printf "%s%s", sep, $0; sep=" · "}')
     [[ -n "$cores" ]] && printf '核心温度：%s\n' "$cores"
   fi
 fi
 if [[ "$IGPU_TEMP" == 1 ]] && command -v sensors >/dev/null 2>&1; then
-  gpu=$(sensors 2>/dev/null | awk '/i915|amdgpu|GPU|edge:/ {if ($0 ~ /\+/) {gsub(/.*\+/, ""); gsub(/°C.*/, "°C"); print; exit}}')
+  sensor_data=${sensor_data:-$(timeout 3s sensors 2>/dev/null || true)}
+  gpu=$(printf '%s\n' "$sensor_data" | awk '/i915|amdgpu|GPU|edge:/ {if ($0 ~ /\+/) {gsub(/.*\+/, ""); gsub(/°C.*/, "°C"); print; exit}}')
   printf '核显温度：%s\n' "${gpu:-未检测到可读的核显温度}"
 fi
 if [[ "$FAN_SPEED" == 1 ]] && command -v sensors >/dev/null 2>&1; then
-  fans=$(sensors 2>/dev/null | awk '/fan[0-9]+:/ {printf "%s%s", sep, $1 " " $2; sep=" · "}')
+  sensor_data=${sensor_data:-$(timeout 3s sensors 2>/dev/null || true)}
+  fans=$(printf '%s\n' "$sensor_data" | awk '/fan[0-9]+:/ {printf "%s%s", sep, $1 " " $2; sep=" · "}')
   printf '风扇转速：%s\n' "${fans:-未检测到风扇转速}"
 fi
 
 if [[ "$UPS_INFO" == 1 ]] && command -v apcaccess >/dev/null 2>&1; then
-  ups=$(apcaccess status 2>/dev/null || true)
+  ups=$(timeout 3s apcaccess status 2>/dev/null || true)
   if [[ -n "$ups" ]]; then
     status=$(printf '%s\n' "$ups" | awk -F: '/^STATUS/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
     charge=$(printf '%s\n' "$ups" | awk -F: '/^BCHARGE/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
@@ -97,27 +107,33 @@ if [[ "$UPS_INFO" == 1 ]] && command -v apcaccess >/dev/null 2>&1; then
     printf 'UPS：%s%s%s%s\n' "${status:-未知}" "${charge:+ · 电池 $charge}" "${timeleft:+ · 剩余 $timeleft}" "${linev:+ · 市电 $linev}"
   fi
 elif [[ "$UPS_INFO" == 1 ]]; then
-  printf 'UPS：未安装 apcupsd（菜单 8 可安装；apcaccess 由该软件包提供）\n'
+  printf 'UPS：未安装 apcupsd（概要配置时可选择安装；apcaccess 由该软件包提供）\n'
 fi
 
-if [[ "$DISK_BASE" == 1 ]]; then for dev in /sys/class/nvme/nvme*; do
-  [[ -d "$dev" ]] || continue
+if [[ "$DISK_BASE" == 1 ]]; then for dev in /sys/class/block/nvme*n*; do
+  [[ -e "$dev" ]] || continue
   name=$(basename "$dev")
-  model=$(cat "$dev/model" 2>/dev/null | one_line)
+  [[ "$name" =~ ^nvme[0-9]+n[0-9]+$ ]] || continue
+  model=$(cat "$dev/device/model" 2>/dev/null | one_line)
   disk="/dev/$name"
-  extra=''
+  capacity=$(lsblk -dn -o SIZE "$disk" 2>/dev/null | one_line)
+  extra="${capacity:+ · 容量 $capacity}"
   if command -v smartctl >/dev/null 2>&1; then
-    smart=$(smartctl -a "$disk" 2>/dev/null || true)
+    smart=$(timeout 4s smartctl -a "$disk" 2>/dev/null || true)
     temp=$(printf '%s\n' "$smart" | awk -F: '/^Temperature:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
     used=$(printf '%s\n' "$smart" | awk -F: '/^Percentage Used:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
     [[ -n "$temp" ]] && extra+=" · $temp"
     [[ -n "$used" ]] && extra+=" · 已使用 $used"
     if [[ "$DISK_POWER" == 1 ]]; then hours=$(printf '%s\n' "$smart" | awk -F: '/^Power On Hours:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}'); [[ -n "$hours" ]] && extra+=" · 通电 $hours"; fi
   fi
+  if [[ "$DISK_IO" == 1 ]] && command -v iostat >/dev/null 2>&1; then
+    util=$(timeout 4s iostat -dx "$disk" 1 2 2>/dev/null | awk -v dev="$name" '$1 == dev {value=$NF} END {print value}')
+    [[ -n "$util" ]] && extra+=" · IO 利用率 ${util}%"
+  fi
   printf 'NVMe：%s%s%s\n' "$name" "${model:+ · $model}" "$extra"
 done; fi
 EOF
-  chmod 0755 "$SUMMARY_HELPER"
+  chmod 0755 "$target"
 }
 
 overview_defaults() {
@@ -218,10 +234,8 @@ EOF
     if [[ -z "$choices" ]]; then
       [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
       printf '\n本次概要配置：%s\n' "$(overview_selected)"
+      install_overview_dependencies || { info '依赖未就绪，已取消本次概要修改。'; return 1; }
       overview_save
-      if [[ "$UPS_INFO" == 1 ]] && ! command -v apcaccess >/dev/null 2>&1; then
-        install_ups_support
-      fi
       return 0
     fi
     [[ "$choices" == s ]] && return 1
@@ -238,6 +252,29 @@ EOF
       esac
     done
     [[ "$DISK_BASE" == 0 ]] && { DISK_POWER=0; DISK_IO=0; }
+  done
+}
+
+install_overview_dependencies() {
+  local packages=() package
+  if [[ "$CPU_POWER" == 1 ]] && ! command -v turbostat >/dev/null 2>&1; then packages+=(linux-cpupower); fi
+  if [[ "$CPU_TEMP" == 1 || "$CPU_CORE_TEMP" == 1 || "$IGPU_TEMP" == 1 || "$FAN_SPEED" == 1 ]] && ! command -v sensors >/dev/null 2>&1; then packages+=(lm-sensors); fi
+  if [[ "$DISK_BASE" == 1 ]] && ! command -v smartctl >/dev/null 2>&1; then packages+=(smartmontools); fi
+  if [[ "$DISK_IO" == 1 ]] && ! command -v iostat >/dev/null 2>&1; then packages+=(sysstat); fi
+  if [[ "$UPS_INFO" == 1 ]] && ! command -v apcaccess >/dev/null 2>&1; then packages+=(apcupsd); fi
+  ((${#packages[@]} == 0)) && return 0
+  info "概要功能缺少以下 Debian 软件包：${packages[*]}"
+  confirm '现在安装这些依赖吗？取消将不会修改概要页面。' || return 1
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  for package in "${packages[@]}"; do
+    case "$package" in
+      linux-cpupower) command -v turbostat >/dev/null || die '已安装 linux-cpupower，但未找到 turbostat。' ;;
+      lm-sensors) command -v sensors >/dev/null || die '已安装 lm-sensors，但未找到 sensors。' ;;
+      smartmontools) command -v smartctl >/dev/null || die '已安装 smartmontools，但未找到 smartctl。' ;;
+      sysstat) command -v iostat >/dev/null || die '已安装 sysstat，但未找到 iostat。' ;;
+      apcupsd) command -v apcaccess >/dev/null || die '已安装 apcupsd，但未找到 apcaccess。' ;;
+    esac
   done
 }
 
@@ -265,8 +302,8 @@ EOF
 schedule_ui_rollback() {
   local purpose="$1"
   write_rollback_helper
-  systemctl stop "$ROLLBACK_UNIT.timer" "$ROLLBACK_UNIT.service" 2>/dev/null || true
-  systemd-run --quiet --unit="$ROLLBACK_UNIT" --on-active=3m "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+  CURRENT_ROLLBACK_UNIT="${ROLLBACK_UNIT}-$(date +%s%N)-$$-$RANDOM"
+  systemd-run --quiet --unit="$CURRENT_ROLLBACK_UNIT" --on-active=3m "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
   info "已启用 3 分钟自动回退保护（$purpose）。"
 }
 
@@ -276,36 +313,157 @@ keep_ui_changes() {
   info '确认概要页或登录页正常后，请在 180 秒内输入 KEEP 保留本次修改。'
   read -r -t 180 -p '确认：' answer || true
   if [[ "$answer" == KEEP ]]; then
-    systemctl stop "$ROLLBACK_UNIT.timer" "$ROLLBACK_UNIT.service" 2>/dev/null || true
+    systemctl stop "$CURRENT_ROLLBACK_UNIT.timer" "$CURRENT_ROLLBACK_UNIT.service" 2>/dev/null || true
     info '已保留修改，自动回退已取消。'
   else
-    info '未收到 KEEP 确认；原始 UI 文件将自动恢复。'
+    systemctl stop "$CURRENT_ROLLBACK_UNIT.timer" "$CURRENT_ROLLBACK_UNIT.service" 2>/dev/null || true
+    "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+    info '未收到 KEEP 确认；原始 UI 文件已恢复。'
   fi
+}
+
+restart_and_verify_pveproxy() {
+  local attempt
+  systemctl restart pveproxy
+  systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
+  if command -v curl >/dev/null 2>&1; then
+    for attempt in {1..12}; do
+      if curl -ksf --connect-timeout 2 https://127.0.0.1:8006/api2/json/version >/dev/null; then return 0; fi
+      sleep 1
+    done
+    "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+    die 'pveproxy 虽在运行，但本机 8006 API 无法访问；原始文件已恢复。'
+  fi
+  info '未安装 curl，已完成服务状态校验；仍需在 KEEP 前由浏览器确认页面。'
 }
 
 restore_latest_ui() {
   local latest
-  latest=$(find "$STATE_DIR/backups" -mindepth 2 -maxdepth 2 -type f -name Nodes.pm -printf '%h\n' 2>/dev/null | sort | tail -n1 || true)
-  [[ -n "$latest" ]] || die '未找到可用于恢复的概要 UI 备份。'
+  latest=$(find "$STATE_DIR/backups" -mindepth 2 -maxdepth 2 -type f \( -name Nodes.pm -o -name pvemanagerlib.js -o -name proxmoxlib.js \) -printf '%h\n' 2>/dev/null | sort -u | tail -n1 || true)
+  [[ -n "$latest" ]] || die '未找到可用于恢复的 PVE UI 备份。'
   write_rollback_helper
   "$ROLLBACK_HELPER" "$latest"
   info "已从以下备份恢复 UI 文件：$latest"
 }
 
+validate_restore_target() {
+  if [[ -n "${PVE_SENSIBLE_TEST_ROOT:-}" && "$1" == "$PVE_SENSIBLE_TEST_ROOT/"* ]]; then
+    return 0
+  fi
+  case "$1" in
+    /usr/share/perl5/PVE/API2/Nodes.pm|/usr/share/pve-manager/js/pvemanagerlib.js|/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js|/usr/share/perl5/PVE/APLInfo.pm|/etc/network/interfaces|/etc/default/grub|/etc/modules|/etc/apt/sources.list.d/debian.sources|/etc/apt/sources.list.d/pve-no-subscription.sources|/etc/apt/sources.list.d/pve-enterprise.sources|/etc/apt/sources.list.d/ceph.sources) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_recorded_backup() {
+  local dir="$1" state target saved manifest="$1/manifest.tsv"
+  [[ -f "$manifest" ]] || die "备份缺少恢复清单：$dir"
+  while IFS=$'\t' read -r state target; do
+    validate_restore_target "$target" || die "备份清单包含非预期路径，拒绝恢复：$target"
+    saved="$dir/$(basename "$target")"
+    case "$state" in
+      present) [[ -f "$saved" ]] || die "备份文件缺失：$saved"; cp -a -- "$saved" "$target" ;;
+      absent) rm -f -- "$target" ;;
+      *) die "备份清单状态无效：$state" ;;
+    esac
+  done <"$manifest"
+}
+
+latest_backup_by_label() {
+  local label="$1"
+  find "$STATE_DIR/backups" -mindepth 1 -maxdepth 1 -type d -name "*-$label" -printf '%p\n' 2>/dev/null | sort | tail -n1
+}
+
+restore_backup_menu() {
+  local choice dir
+  cat <<'EOF'
+
+恢复备份：
+  1) 最近一次 PVE UI / 订阅弹窗备份
+  2) 最近一次软件源备份
+  3) 最近一次 IPv6 网络配置备份（不重启网络）
+  4) 最近一次 CT 模板源备份
+  5) 最近一次 IOMMU 启动配置备份
+  0) 返回
+EOF
+  read -r -p '请选择：' choice
+  case "$choice" in
+    1) restore_latest_ui; return ;;
+    2) dir=$(latest_backup_by_label sources) ;;
+    3) dir=$(latest_backup_by_label ipv6) ;;
+    4) dir=$(latest_backup_by_label ct-template) ;;
+    5) dir=$(latest_backup_by_label iommu) ;;
+    0) return ;;
+    *) printf '无效选择。\n'; return ;;
+  esac
+  [[ -n "$dir" ]] || die '未找到对应类型的备份。'
+  confirm "确认从 $dir 恢复吗？" || return 0
+  restore_recorded_backup "$dir"
+  case "$choice" in
+    2) apt-get update || info '原软件源已恢复，但当前 apt 更新仍失败，请检查网络或其他第三方源。' ;;
+    3) info '网络文件已恢复；为避免 SSH 断线，未重启网络。' ;;
+    4) pveam update || info 'APLInfo.pm 已恢复，但模板列表更新失败。' ;;
+    5) update-initramfs -u -k all && update-grub || die '配置文件已恢复，但重新生成启动文件失败，请勿重启。' ;;
+  esac
+  info "恢复完成：$dir"
+}
+
+legacy_overview_detected() {
+  local nodes="${1:-$NODES_PM}" manager="${2:-$MANAGER_JS}"
+  grep -Eq 'my[[:space:]]+\$(cpumodes|cpupowers|cpufreqs)|turbostat[^;]*PkgWatt' "$nodes" ||
+    grep -Eq "textField:[[:space:]]*['\"](cpumode|cpupower|cpufreqs|cputemp|coretemp|nvme|upsinfo)['\"]" "$manager"
+}
+
+extract_pristine_pve_manager() {
+  local dest="$1" owner_js owner_nodes version deb='' candidate cache="${PVE_SENSIBLE_APT_CACHE:-/var/cache/apt/archives}"
+  owner_nodes=$(dpkg-query -S "$NODES_PM" 2>/dev/null | head -n1 | cut -d: -f1)
+  owner_js=$(dpkg-query -S "$MANAGER_JS" 2>/dev/null | head -n1 | cut -d: -f1)
+  [[ "$owner_nodes" == pve-manager && "$owner_js" == pve-manager ]] || die '无法确认两个概要文件均属于 pve-manager 软件包，拒绝自动迁移。'
+  version=$(dpkg-query -W -f='${Version}' pve-manager 2>/dev/null)
+  [[ -n "$version" ]] || die '无法读取当前 pve-manager 精确版本。'
+
+  for candidate in "$cache"/pve-manager_*.deb; do
+    [[ -f "$candidate" ]] || continue
+    if [[ "$(dpkg-deb -f "$candidate" Version 2>/dev/null || true)" == "$version" ]]; then
+      deb="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$deb" ]]; then
+    info "正在下载当前已安装的精确版本 pve-manager=$version（仅下载，不安装）。"
+    (cd "$dest" && apt-get download "pve-manager=$version") || die '无法下载当前已安装的 pve-manager 精确版本；未修改任何 UI 文件。'
+    for candidate in "$dest"/pve-manager_*.deb; do
+      [[ -f "$candidate" ]] || continue
+      if [[ "$(dpkg-deb -f "$candidate" Version 2>/dev/null || true)" == "$version" ]]; then deb="$candidate"; break; fi
+    done
+  fi
+  [[ -f "$deb" ]] || die '没有找到与当前安装版本完全一致的 pve-manager 安装包；未修改任何 UI 文件。'
+  dpkg-deb -x "$deb" "$dest/root" || die '无法解压 pve-manager 安装包；未修改任何 UI 文件。'
+  [[ -f "$dest/root$NODES_PM" && -f "$dest/root$MANAGER_JS" ]] || die '安装包内缺少概要文件；未修改任何 UI 文件。'
+  perl -c "$dest/root$NODES_PM" >/dev/null || die '安装包内 Nodes.pm 校验失败；未修改任何 UI 文件。'
+  grep -q "textField:[[:space:]]*['\"]pveversion['\"]" "$dest/root$MANAGER_JS" || die '安装包内 pvemanagerlib.js 缺少 PVE 9 概要锚点；未修改任何 UI 文件。'
+}
+
 preflight_overview_compatibility() {
-  local node_test js_test block
+  local node_source="${1:-$NODES_PM}" js_source="${2:-$MANAGER_JS}" node_test js_test block
   node_test=$(mktemp) || die '无法创建概要信息兼容性测试文件。'
   js_test=$(mktemp) || { rm -f "$node_test"; die '无法创建概要信息兼容性测试文件。'; }
   block=$(mktemp) || { rm -f "$node_test" "$js_test"; die '无法创建概要信息兼容性测试文件。'; }
-  cp -- "$NODES_PM" "$node_test"
-  cp -- "$MANAGER_JS" "$js_test"
+  cp -- "$node_source" "$node_test"
+  cp -- "$js_source" "$js_test"
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
     if ! insert_nodes_summary "$node_test" 2>/dev/null || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$node_test"; then
       rm -f "$node_test" "$js_test" "$block"
       die '当前 PVE 的 Nodes.pm 与脚本不兼容；未修改任何文件。请提交 pveversion 附近的代码后再适配。'
     fi
   fi
-  if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
+  if grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
+    if ! update_overview_alignment "$js_test"; then
+      rm -f "$node_test" "$js_test" "$block"
+      die '现有 pve-sensible 概要区块不完整；未修改任何文件。请先从菜单 6 恢复 UI 备份。'
+    fi
+  else
     write_overview_js_block "$block"
     if ! insert_after_pveversion "$js_test" "$block" || ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
       rm -f "$node_test" "$js_test" "$block"
@@ -325,7 +483,7 @@ write_overview_js_block() {
   local target="$1" align
   case "$OVERVIEW_ALIGN" in l) align=left ;; r) align=right ;; m) align=center ;; j) align=justify ;; esac
   cat >"$target" <<EOF
-        // PVE_SENSIBLE_OVERVIEW
+        // PVE_SENSIBLE_OVERVIEW_BEGIN
         {
             itemId: 'pve-sensible-summary',
             colspan: 2,
@@ -337,7 +495,23 @@ write_overview_js_block() {
                 return Ext.htmlEncode(value || '').replace(/\\n/g, '<br>');
             },
         },
+        // PVE_SENSIBLE_OVERVIEW_END
 EOF
+}
+
+update_overview_alignment() {
+  local target="$1" align marker_line end_line count
+  case "$OVERVIEW_ALIGN" in l) align=left ;; r) align=right ;; m) align=center ;; j) align=justify ;; *) return 1 ;; esac
+  count=$(grep -c 'PVE_SENSIBLE_OVERVIEW' "$target" || true)
+  # New blocks have BEGIN+END; old blocks have one marker. Both are supported.
+  [[ "$count" == 1 || "$count" == 2 ]] || return 1
+  marker_line=$(grep -n -m1 'PVE_SENSIBLE_OVERVIEW' "$target" | cut -d: -f1)
+  [[ "$marker_line" =~ ^[0-9]+$ ]] || return 1
+  end_line=$((marker_line + 18))
+  count=$(sed -n "${marker_line},${end_line}p" "$target" | grep -Ec "textAlign:[[:space:]]*'(left|right|center|justify)'" || true)
+  [[ "$count" == 1 ]] || return 1
+  sed -i "${marker_line},${end_line}s/textAlign:[[:space:]]*'(left\|right\|center\|justify)'/textAlign: '$align'/" "$target"
+  sed -n "${marker_line},${end_line}p" "$target" | grep -q "textAlign: '$align'"
 }
 
 insert_after_pveversion() {
@@ -349,13 +523,29 @@ insert_after_pveversion() {
 }
 
 apply_overview() {
+  local pristine_dir='' node_source="$NODES_PM" js_source="$MANAGER_JS" answer block
   [[ -f "$NODES_PM" && -f "$MANAGER_JS" ]] || die '未找到 PVE 前端文件。'
   overview_load
-  preflight_overview_compatibility
-  configure_overview || return 0
+  if legacy_overview_detected; then
+    info '检测到旧版 pve_source 概要代码。为防止字段重复，不能直接叠加新补丁。'
+    info '迁移会先从当前 pve-manager 精确版本安装包提取原版文件；不会重装软件包。旧文件仍受 3 分钟自动回退保护。'
+    read -r -p '确认迁移请输入 MIGRATE：' answer
+    [[ "$answer" == MIGRATE ]] || { info '已取消；未修改任何文件。'; return 0; }
+    pristine_dir=$(mktemp -d) || die '无法创建原版文件提取目录。'
+    extract_pristine_pve_manager "$pristine_dir"
+    node_source="$pristine_dir/root$NODES_PM"
+    js_source="$pristine_dir/root$MANAGER_JS"
+  fi
+  preflight_overview_compatibility "$node_source" "$js_source"
+  configure_overview || { [[ -z "$pristine_dir" ]] || rm -rf -- "$pristine_dir"; return 0; }
   begin_transaction overview
   backup "$NODES_PM"; backup "$MANAGER_JS"
   schedule_ui_rollback 'overview installation'
+  if [[ -n "$pristine_dir" ]]; then
+    cp --preserve=mode,timestamps -- "$node_source" "$NODES_PM"
+    cp --preserve=mode,timestamps -- "$js_source" "$MANAGER_JS"
+    rm -rf -- "$pristine_dir"
+  fi
   write_summary_helper
 
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$NODES_PM"; then
@@ -364,8 +554,12 @@ apply_overview() {
       die 'Nodes.pm 插入失败，原始文件已恢复。'
     fi
   fi
-  if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$MANAGER_JS"; then
-    local block
+  if grep -q 'PVE_SENSIBLE_OVERVIEW' "$MANAGER_JS"; then
+    if ! update_overview_alignment "$MANAGER_JS"; then
+      "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+      die '已有概要区块的排版更新失败，原始文件已恢复。'
+    fi
+  else
     block=$(mktemp) || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die '无法创建概要信息前端区块。'; }
     write_overview_js_block "$block"
     if ! insert_after_pveversion "$MANAGER_JS" "$block"; then
@@ -374,25 +568,45 @@ apply_overview() {
     rm -f "$block"
   fi
   if ! perl -c "$NODES_PM" >/dev/null; then "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'Perl 校验失败，原始文件已恢复。'; fi
-  systemctl restart pveproxy
-  systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
-  command -v curl >/dev/null && curl -ksf https://127.0.0.1:8006/api2/json/version >/dev/null || true
+  restart_and_verify_pveproxy
   keep_ui_changes
 }
 
 set_ipv6_slaac() {
-  local file=/etc/network/interfaces
+  local file=/etc/network/interfaces test_file
   [[ -f "$file" ]] || die "$file 不存在。"
-  grep -qE '^\s*iface\s+vmbr0\s+inet6\s+' "$file" && die 'vmbr0 已有 inet6 配置，不能叠加本 SLAAC 方案。'
+  grep -qE '^[[:space:]]*iface[[:space:]]+vmbr0[[:space:]]+inet6[[:space:]]+' "$file" && die 'vmbr0 已有 inet6 配置，不能叠加本 SLAAC 方案。'
+  if grep -Eq 'net\.ipv6\.conf\.vmbr0\.accept_ra[=[:space:]]+2|/proc/sys/net/ipv6/conf/vmbr0/accept_ra' "$file"; then
+    sysctl -qw net.ipv6.conf.vmbr0.accept_ra=2
+    info '已检测到 vmbr0 的 accept_ra=2 持久化配置，未重复写入。'
+    ip -6 addr show dev vmbr0 scope global || true
+    return 0
+  fi
+  test_file=$(mktemp) || die '无法创建 IPv6 配置预检文件。'
+  cp -- "$file" "$test_file"
+  if ! insert_ipv6_slaac "$test_file"; then
+    rm -f "$test_file"
+    die '未能唯一定位 iface vmbr0 inet 配置段；未修改网络文件。'
+  fi
+  rm -f "$test_file"
   begin_transaction ipv6
   backup "$file"
-  if ! grep -q 'PVE_SENSIBLE_SLAAC' "$file"; then
-    sed -i '/^source \/etc\/network\/interfaces\.d\/\*/i\    post-up sysctl -qw net.ipv6.conf.vmbr0.accept_ra=2 # PVE_SENSIBLE_SLAAC' "$file"
+  if ! insert_ipv6_slaac "$file"; then
+    restore_source_transaction "$CURRENT_BACKUP_DIR" "$file"
+    die 'IPv6 配置写入失败，原网络文件已恢复。'
   fi
-  grep -q 'PVE_SENSIBLE_SLAAC' "$file" || die '未找到安全的 vmbr0 写入位置，未完成持久化修改。'
   sysctl -qw net.ipv6.conf.vmbr0.accept_ra=2
-  info '已加入 SLAAC 配置。为避免远程断连，未重启网络；请在本机控制台执行：systemctl restart networking'
+  info '已在 vmbr0 配置段加入 accept_ra=2；未重启网络，当前内核参数已立即生效。'
   ip -6 addr show dev vmbr0 scope global || true
+}
+
+insert_ipv6_slaac() {
+  local target="$1" count
+  grep -Eq 'net\.ipv6\.conf\.vmbr0\.accept_ra[=[:space:]]+2|/proc/sys/net/ipv6/conf/vmbr0/accept_ra' "$target" && return 0
+  count=$(grep -Ec '^[[:space:]]*iface[[:space:]]+vmbr0[[:space:]]+inet[[:space:]]+' "$target" || true)
+  [[ "$count" == 1 ]] || return 1
+  sed -i '/^[[:space:]]*iface[[:space:]]\+vmbr0[[:space:]]\+inet[[:space:]]\+/a\    post-up sysctl -qw net.ipv6.conf.vmbr0.accept_ra=2 # PVE_SENSIBLE_SLAAC' "$target"
+  grep -q 'PVE_SENSIBLE_SLAAC' "$target"
 }
 
 choose_mirror() {
@@ -407,7 +621,7 @@ choose_mirror() {
 EOF
   read -r -p '请选择：' mirror
   case "$mirror" in
-    1) MIRROR_NAME='清华 TUNA'; DEBIAN_URI=https://mirrors.tuna.tsinghua.edu.cn/debian; SECURITY_URI=https://security.debian.org/debian-security; PVE_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve; CEPH_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/ceph-squid; CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox ;;
+    1) MIRROR_NAME='清华 TUNA'; DEBIAN_URI=https://mirrors.tuna.tsinghua.edu.cn/debian; SECURITY_URI=https://mirrors.tuna.tsinghua.edu.cn/debian-security; PVE_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve; CEPH_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/ceph-squid; CT_URI=https://mirrors.tuna.tsinghua.edu.cn/proxmox ;;
     2) MIRROR_NAME='中科大 USTC'; DEBIAN_URI=https://mirrors.ustc.edu.cn/debian; SECURITY_URI=https://mirrors.ustc.edu.cn/debian-security; PVE_URI=https://mirrors.ustc.edu.cn/proxmox/debian/pve; CEPH_URI=https://mirrors.ustc.edu.cn/proxmox/debian/ceph-squid; CT_URI=https://mirrors.ustc.edu.cn/proxmox ;;
     3) MIRROR_NAME='官方源'; DEBIAN_URI=https://deb.debian.org/debian; SECURITY_URI=https://security.debian.org/debian-security; PVE_URI=http://download.proxmox.com/debian/pve; CEPH_URI=http://download.proxmox.com/debian/ceph-squid; CT_URI=http://download.proxmox.com ;;
     0) return 1 ;;
@@ -486,7 +700,12 @@ set_ct_template_source() {
     die 'CT 模板源定位失败；原文件已恢复。'
   fi
   grep -qF "$CT_URI" "$apl" || { restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"; die 'CT 模板源定位失败；原文件已恢复。'; }
-  info "CT 模板源已改为 $MIRROR_NAME。执行 pveam update 后生效；PVE 更新后可通过备份记录重新应用。"
+  if ! pveam update; then
+    restore_source_transaction "$CURRENT_BACKUP_DIR" "$apl"
+    pveam update >/dev/null 2>&1 || true
+    die 'CT 模板列表更新失败，APLInfo.pm 已恢复。'
+  fi
+  info "CT 模板源已改为 $MIRROR_NAME，模板列表更新成功。PVE 更新后可通过备份记录重新应用。"
 }
 
 replace_ct_source() {
@@ -536,7 +755,7 @@ EOF
 disable_subscription_popup() {
   local test_file
   [[ -f "$TOOLKIT_JS" ]] || die '未找到 Proxmox 前端工具文件。'
-  if grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$TOOLKIT_JS"; then info '订阅弹窗补丁已存在。'; return; fi
+  if subscription_popup_disabled_in_file "$TOOLKIT_JS"; then info '已检测到订阅弹窗禁用补丁，未重复修改。'; return; fi
   test_file=$(mktemp) || die '无法创建订阅弹窗兼容性测试文件。'
   cp -- "$TOOLKIT_JS" "$test_file"
   if ! disable_subscription_in_file "$test_file" || ! grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$test_file"; then
@@ -547,14 +766,19 @@ disable_subscription_popup() {
   begin_transaction subscription-popup
   backup "$TOOLKIT_JS"
   schedule_ui_rollback 'subscription-popup patch'
-  if ! disable_subscription_in_file "$TOOLKIT_JS"; then
+  if ! disable_subscription_in_file "$TOOLKIT_JS" || ! grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$TOOLKIT_JS"; then
     "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
     die '订阅弹窗补丁写入失败，原始文件已恢复。'
   fi
-  systemctl restart pveproxy
-  systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
+  restart_and_verify_pveproxy
   info '登录订阅弹窗补丁已应用。PVE 软件包升级后可能会被覆盖。'
   keep_ui_changes
+}
+
+subscription_popup_disabled_in_file() {
+  local target="$1"
+  grep -q 'PVE_SENSIBLE_NO_SUBSCRIPTION' "$target" ||
+    sed -n '/\/nodes\/localhost\/subscription/,+30p' "$target" | grep -Eq 'if[[:space:]]*\([[:space:]]*false[[:space:]]*\)|void[[:space:]]*\('
 }
 
 disable_subscription_in_file() {
@@ -571,25 +795,6 @@ disable_subscription_in_file() {
 }' "$target"
 }
 
-install_ups_support() {
-  if command -v apcaccess >/dev/null 2>&1; then
-    info '已检测到 apcaccess，未进行软件包修改。'
-    apcaccess status 2>/dev/null | grep -E '^(STATUS|BCHARGE|TIMELEFT|LINEV)' || true
-    return 0
-  fi
-  info '此操作安装 Debian 的 apcupsd 软件包；不会安装 NUT，也不会改动其他 UPS 服务。'
-  info '该软件包提供 apcupsd 服务和概要读取所需的 apcaccess 命令。'
-  confirm '现在安装 apcupsd 吗？' || return 0
-  apt update
-  apt install -y apcupsd
-  if command -v apcaccess >/dev/null 2>&1; then
-    info 'apcupsd 已安装。请在依赖其断电保护前，确认配置、USB/串口设备和服务状态。'
-    systemctl --no-pager --full status apcupsd || true
-  else
-    die 'apcupsd 安装完成，但未找到 apcaccess 命令。'
-  fi
-}
-
 passthrough_status() {
   info 'IOMMU 内核日志：'; dmesg | grep -Ei 'DMAR|IOMMU' | tail -n 20 || true
   info 'PCI 设备：'; lspci -nn
@@ -604,17 +809,43 @@ passthrough_status() {
 }
 
 enable_iommu() {
-  local grub=/etc/default/grub cpu_arg
+  local grub=/etc/default/grub modules=/etc/modules cpu_arg test_grub test_modules answer
   [[ -f "$grub" ]] || die "未找到 $grub；当前模块仅支持使用 GRUB 的主机。"
   if grep -qi 'AuthenticAMD' /proc/cpuinfo; then cpu_arg='amd_iommu=on iommu=pt'; else cpu_arg='intel_iommu=on iommu=pt'; fi
-  confirm "添加 '$cpu_arg' 与 VFIO 模块吗？完成后需要手动重启。" || return 0
+  printf "将写入 GRUB 参数：%s，并加入 VFIO 基础模块。不会绑定任何 PCI 设备，也不会自动重启。\n" "$cpu_arg"
+  read -r -p '确认继续请输入 IOMMU：' answer
+  [[ "$answer" == IOMMU ]] || { info '已取消 IOMMU 配置。'; return 0; }
+  test_grub=$(mktemp); test_modules=$(mktemp)
+  cp -- "$grub" "$test_grub"
+  [[ -f "$modules" ]] && cp -- "$modules" "$test_modules" || : >"$test_modules"
+  if ! prepare_iommu_files "$test_grub" "$test_modules" "$cpu_arg"; then
+    rm -f "$test_grub" "$test_modules"
+    die 'GRUB 或 modules 文件结构不兼容；未修改启动配置。'
+  fi
+  rm -f "$test_grub" "$test_modules"
   begin_transaction iommu
-  backup "$grub"; backup /etc/modules
-  grep -q "$cpu_arg" "$grub" || sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $cpu_arg\"/" "$grub"
-  for module in vfio vfio_iommu_type1 vfio_pci; do grep -qx "$module" /etc/modules || echo "$module" >>/etc/modules; done
-  update-initramfs -u -k all
-  update-grub
+  backup "$grub"; backup "$modules"
+  if ! prepare_iommu_files "$grub" "$modules" "$cpu_arg" || ! update-initramfs -u -k all || ! update-grub; then
+    restore_source_transaction "$CURRENT_BACKUP_DIR" "$grub" "$modules"
+    update-initramfs -u -k all >/dev/null 2>&1 || true
+    update-grub >/dev/null 2>&1 || true
+    die 'IOMMU 启动配置生成失败，配置文件已恢复并重新生成启动文件。'
+  fi
   info 'IOMMU 启动准备已完成。请手动重启后运行菜单 5 检查分组；未自动绑定任何 PCI 设备。'
+}
+
+prepare_iommu_files() {
+  local grub="$1" modules="$2" args="$3" arg count
+  count=$(grep -Ec '^GRUB_CMDLINE_LINUX_DEFAULT="[^"]*"[[:space:]]*$' "$grub" || true)
+  [[ "$count" == 1 ]] || return 1
+  for arg in $args; do
+    if ! grep -Eq "^GRUB_CMDLINE_LINUX_DEFAULT=\"([^\"]*[[:space:]])?${arg}([[:space:]][^\"]*)?\"[[:space:]]*$" "$grub"; then
+      sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT=/s/\"[[:space:]]*$/ $arg\"/" "$grub"
+    fi
+  done
+  for module in vfio vfio_iommu_type1 vfio_pci; do
+    grep -qxF "$module" "$modules" || printf '%s\n' "$module" >>"$modules"
+  done
 }
 
 passthrough_wizard() {
@@ -635,7 +866,7 @@ PVE 简洁维护工具（PVE 9）
   3) 仅关闭登录时的订阅弹窗
   4) 通过 accept_ra=2 为 vmbr0 启用 SLAAC IPv6（不重启网络）
   5) PCI 直通 / IOMMU（检查并按需准备 GRUB + VFIO）
-  6) 恢复最近一次备份的 PVE UI 文件
+  6) 恢复备份（UI / 软件源 / IPv6 / CT / IOMMU）
   0) 退出
 EOF
     read -r -p '请选择：' choice
@@ -645,7 +876,7 @@ EOF
       3) run_menu_action '关闭订阅弹窗' disable_subscription_popup ;;
       4) run_menu_action 'SLAAC IPv6' set_ipv6_slaac ;;
       5) run_menu_action 'PCI 直通 / IOMMU' passthrough_wizard ;;
-      6) run_menu_action '恢复 PVE UI' restore_latest_ui ;;
+      6) run_menu_action '恢复备份' restore_backup_menu ;;
       0) exit 0 ;; *) printf '无效选择。\n' ;;
     esac
   done
