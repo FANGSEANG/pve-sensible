@@ -142,6 +142,8 @@ overview_defaults() {
 }
 overview_load() {
   overview_defaults
+  # The generated configuration path is fixed above.
+  # shellcheck disable=SC1090
   [[ -r "$OVERVIEW_CONF" ]] && . "$OVERVIEW_CONF"
 }
 overview_save() {
@@ -323,11 +325,11 @@ keep_ui_changes() {
 }
 
 restart_and_verify_pveproxy() {
-  local attempt
+  local _attempt
   systemctl restart pveproxy
   systemctl is-active --quiet pveproxy || { "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"; die 'pveproxy 未能启动，原始文件已恢复。'; }
   if command -v curl >/dev/null 2>&1; then
-    for attempt in {1..12}; do
+    for _attempt in {1..12}; do
       if curl -ksf --connect-timeout 2 https://127.0.0.1:8006/api2/json/version >/dev/null; then return 0; fi
       sleep 1
     done
@@ -404,13 +406,19 @@ EOF
     2) apt-get update || info '原软件源已恢复，但当前 apt 更新仍失败，请检查网络或其他第三方源。' ;;
     3) info '网络文件已恢复；为避免 SSH 断线，未重启网络。' ;;
     4) pveam update || info 'APLInfo.pm 已恢复，但模板列表更新失败。' ;;
-    5) update-initramfs -u -k all && update-grub || die '配置文件已恢复，但重新生成启动文件失败，请勿重启。' ;;
+    5)
+      if ! update-initramfs -u -k all || ! update-grub; then
+        die '配置文件已恢复，但重新生成启动文件失败，请勿重启。'
+      fi
+      ;;
   esac
   info "恢复完成：$dir"
 }
 
 legacy_overview_detected() {
   local nodes="${1:-$NODES_PM}" manager="${2:-$MANAGER_JS}"
+  # The literal dollar sign identifies legacy Perl variables.
+  # shellcheck disable=SC2016
   grep -Eq 'my[[:space:]]+\$(cpumodes|cpupowers|cpufreqs)|turbostat[^;]*PkgWatt' "$nodes" ||
     grep -Eq "textField:[[:space:]]*['\"](cpumode|cpupower|cpufreqs|cputemp|coretemp|nvme|upsinfo)['\"]" "$manager"
 }
@@ -526,7 +534,7 @@ apply_overview() {
   local pristine_dir='' node_source="$NODES_PM" js_source="$MANAGER_JS" answer block
   [[ -f "$NODES_PM" && -f "$MANAGER_JS" ]] || die '未找到 PVE 前端文件。'
   overview_load
-  if legacy_overview_detected; then
+  if legacy_overview_detected "$NODES_PM" "$MANAGER_JS"; then
     info '检测到旧版 pve_source 概要代码。为防止字段重复，不能直接叠加新补丁。'
     info '迁移会先从当前 pve-manager 精确版本安装包提取原版文件；不会重装软件包。旧文件仍受 3 分钟自动回退保护。'
     read -r -p '确认迁移请输入 MIGRATE：' answer
@@ -546,7 +554,7 @@ apply_overview() {
     cp --preserve=mode,timestamps -- "$js_source" "$MANAGER_JS"
     rm -rf -- "$pristine_dir"
   fi
-  write_summary_helper
+  write_summary_helper "$SUMMARY_HELPER"
 
   if ! grep -q 'PVE_SENSIBLE_OVERVIEW' "$NODES_PM"; then
     if ! insert_nodes_summary "$NODES_PM"; then
@@ -817,7 +825,7 @@ enable_iommu() {
   [[ "$answer" == IOMMU ]] || { info '已取消 IOMMU 配置。'; return 0; }
   test_grub=$(mktemp); test_modules=$(mktemp)
   cp -- "$grub" "$test_grub"
-  [[ -f "$modules" ]] && cp -- "$modules" "$test_modules" || : >"$test_modules"
+  if [[ -f "$modules" ]]; then cp -- "$modules" "$test_modules"; else : >"$test_modules"; fi
   if ! prepare_iommu_files "$test_grub" "$test_modules" "$cpu_arg"; then
     rm -f "$test_grub" "$test_modules"
     die 'GRUB 或 modules 文件结构不兼容；未修改启动配置。'
