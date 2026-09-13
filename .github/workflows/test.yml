@@ -115,6 +115,30 @@ jobs:
           PVE_SENSIBLE_APT_CACHE="$cache" PATH="$bindir:$PATH" extract_pristine_pve_manager "$destination"
           grep -q "pveversion} = 'fixture'" "$destination/root/usr/share/perl5/PVE/API2/Nodes.pm"
           grep -q "textField: 'pveversion'" "$destination/root/usr/share/pve-manager/js/pvemanagerlib.js"
+      - name: Validate against official PVE 9.2.18 package
+        shell: bash
+        run: |
+          PVE_SENSIBLE_LIB_ONLY=1 source ./pve-sensible.sh
+          root=$(mktemp -d)
+          deb="$root/pve-manager_9.2.18_all.deb"
+          curl --fail --location --retry 3 --output "$deb" \
+            http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/pve-manager_9.2.18_all.deb
+          printf '%s  %s\n' '55789e5fb716339f6c326e3d040b295670bd16e304f3d3fc7de7b97388a75964' "$deb" | sha256sum --check
+          dpkg-deb --extract "$deb" "$root/package"
+          nodes="$root/package/usr/share/perl5/PVE/API2/Nodes.pm"
+          manager="$root/package/usr/share/pve-manager/js/pvemanagerlib.js"
+          test -f "$nodes"
+          test -f "$manager"
+          ! legacy_overview_detected "$nodes" "$manager"
+          OVERVIEW_ALIGN=j
+          preflight_overview_compatibility "$nodes" "$manager"
+          insert_nodes_summary "$nodes"
+          block=$(mktemp)
+          write_overview_js_block "$block"
+          insert_after_pveversion "$manager" "$block"
+          grep -q 'PVE_SENSIBLE_OVERVIEW' "$nodes"
+          grep -q "textAlign: 'justify'" "$manager"
+          node --check "$manager"
       - name: Validate CT template mirror replacement matcher
         shell: bash
         run: |
