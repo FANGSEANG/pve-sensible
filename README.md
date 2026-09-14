@@ -14,9 +14,9 @@
 
 这会修改 PVE 的 `Nodes.pm` 与 `pvemanagerlib.js`。脚本会先备份到 `/var/lib/pve-sensible/backups/<时间戳>/`，并在重启 `pveproxy` 前执行 `perl -c` 校验。传感器、UPS、SMART、IO 和功耗读取均设有超时，避免异常硬件命令长期拖住概要 API。
 
-如果检测到旧版 `pve_source` 已加入的 `$cpumodes`、`$cpupowers`、`$cpufreqs` 等代码，脚本不会继续叠加。只有输入 `MIGRATE` 后，才会从当前已安装的 **完全相同版本** `pve-manager` 安装包中提取两份原版文件，再安装本项目的概要区块；它不会执行软件包重装。下载不到相同版本时会在修改 UI 前终止。
+如果检测到旧版 `pve_source` 已加入的 `$cpumodes`、`$cpupowers`、`$cpufreqs` 等代码，脚本不会继续叠加。用户确认 `[y/N]` 后，脚本才会从当前已安装的 **完全相同版本** `pve-manager` 安装包中提取两份原版文件，再安装本项目的概要区块；它不会执行软件包重装。下载不到相同版本时会在修改 UI 前终止。
 
-更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 后会检查服务状态及本机 8006 API，再要求你在 SSH 会话里输入 `KEEP`；只有确认浏览器页面正常，才会取消自动回退。没有输入 `KEEP`、断开 SSH，或页面无法打开时，原始 UI 文件会自行恢复。菜单第 6 项也可分别恢复 UI、软件源、IPv6、CT 模板源或 IOMMU 配置。
+更重要的是，概览与订阅弹窗改动会先安排 **3 分钟自动回退**。脚本重启 `pveproxy` 后会检查服务状态及本机 8006 API；PVE 网页 Shell 此时可能断开。强制刷新并确认页面正常后，请重新打开 Shell，在 3 分钟内运行 `/root/pve-sensible.sh --keep-ui`（或重新进入主菜单选择 7），再按 `[y/N]` 确认，才会取消自动回退。未确认、Shell 断开或页面无法打开时，原始 UI 文件会自行恢复。菜单第 6 项也可分别恢复 UI、软件源、IPv6、CT 模板源或 IOMMU 配置。
 
 PVE 包升级可能覆盖修改；之后重新执行“安装概览”即可。
 
@@ -60,7 +60,7 @@ Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验
 wget -qO /root/pve-sensible.sh https://raw.githubusercontent.com/FANGSEANG/pve-sensible/main/pve-sensible.sh && chmod 700 /root/pve-sensible.sh && /root/pve-sensible.sh
 ```
 
-它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。你的主机如果已经运行过旧版 `pve_source` 概要功能，菜单 1 会先提示安全迁移。确认浏览器页面正常后，必须在 SSH 会话输入大写 `KEEP`；否则 3 分钟后恢复操作前的 UI。
+它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。你的主机如果已经运行过旧版 `pve_source` 概要功能，菜单 1 会先提示安全迁移。确认浏览器页面正常后，重新打开 Shell 并运行 `/root/pve-sensible.sh --keep-ui`，按 `y` 确认；否则 3 分钟后恢复操作前的 UI。
 
 后续再次打开菜单，直接执行：
 

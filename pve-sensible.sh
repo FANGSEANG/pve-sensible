@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 readonly APP="pve-sensible"
-readonly STATE_DIR="/var/lib/${APP}"
+readonly STATE_DIR="${PVE_SENSIBLE_STATE_DIR:-/var/lib/${APP}}"
 readonly LIB_DIR="/usr/local/lib/${APP}"
 readonly SUMMARY_HELPER="${LIB_DIR}/summary.sh"
 readonly OVERVIEW_CONF="/etc/pve-sensible/overview.conf"
@@ -13,6 +13,8 @@ readonly MANAGER_JS="/usr/share/pve-manager/js/pvemanagerlib.js"
 readonly TOOLKIT_JS="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 readonly ROLLBACK_HELPER="${LIB_DIR}/rollback-ui.sh"
 readonly ROLLBACK_UNIT="pve-sensible-ui-rollback"
+readonly RUN_DIR="${PVE_SENSIBLE_RUN_DIR:-/run/${APP}}"
+readonly PENDING_UI_FILE="${RUN_DIR}/pending-ui"
 CURRENT_BACKUP_DIR=''
 CURRENT_ROLLBACK_UNIT=''
 
@@ -287,6 +289,7 @@ write_rollback_helper() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 backup_dir=${1:?backup directory required}
+pending_file=/run/pve-sensible/pending-ui
 for name in Nodes.pm pvemanagerlib.js proxmoxlib.js; do
   [[ -f "$backup_dir/$name" ]] || continue
   case "$name" in
@@ -297,6 +300,10 @@ for name in Nodes.pm pvemanagerlib.js proxmoxlib.js; do
   cp -a -- "$backup_dir/$name" "$target"
 done
 systemctl restart pveproxy
+if [[ -f "$pending_file" ]]; then
+  pending_backup=$(sed -n '2p' "$pending_file")
+  [[ "$pending_backup" != "$backup_dir" ]] || rm -f -- "$pending_file"
+fi
 logger -t pve-sensible 'UI files automatically restored from rollback backup'
 EOF
   chmod 0755 "$ROLLBACK_HELPER"
@@ -304,25 +311,38 @@ EOF
 
 schedule_ui_rollback() {
   local purpose="$1"
+  [[ ! -e "$PENDING_UI_FILE" ]] || die "已有一项 UI 修改等待确认。请先运行 $0 --keep-ui，或等待其自动回退后再试。"
   write_rollback_helper
   CURRENT_ROLLBACK_UNIT="${ROLLBACK_UNIT}-$(date +%s%N)-$$-$RANDOM"
   systemd-run --quiet --unit="$CURRENT_ROLLBACK_UNIT" --on-active=3m "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
+  install -d -m 0700 "$RUN_DIR"
+  umask 077
+  printf '%s\n%s\n' "$CURRENT_ROLLBACK_UNIT" "$CURRENT_BACKUP_DIR" >"$PENDING_UI_FILE.tmp"
+  mv -f -- "$PENDING_UI_FILE.tmp" "$PENDING_UI_FILE"
   info "已启用 3 分钟自动回退保护（$purpose）。"
 }
 
 keep_ui_changes() {
-  local answer=''
-  info '请在另一个浏览器标签页打开 PVE，并强制刷新页面。'
-  info '确认概要页或登录页正常后，请在 180 秒内输入 KEEP 保留本次修改。'
-  read -r -t 180 -p '确认：' answer || true
-  if [[ "$answer" == KEEP ]]; then
-    systemctl stop "$CURRENT_ROLLBACK_UNIT.timer" "$CURRENT_ROLLBACK_UNIT.service" 2>/dev/null || true
-    info '已保留修改，自动回退已取消。'
-  else
-    systemctl stop "$CURRENT_ROLLBACK_UNIT.timer" "$CURRENT_ROLLBACK_UNIT.service" 2>/dev/null || true
-    "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
-    info '未收到 KEEP 确认；原始 UI 文件已恢复。'
+  info '请强制刷新 PVE 网页并确认页面正常。网页 Shell 可能因 pveproxy 重启而断开，这是正常现象。'
+  info "确认正常后，请在 3 分钟内重新打开 Shell 并运行：$0 --keep-ui"
+  info '也可以重新运行脚本，在主菜单选择 7。若不确认，计时结束后会自动恢复原 UI。'
+}
+
+confirm_keep_ui_changes() {
+  local unit backup extra
+  [[ -r "$PENDING_UI_FILE" ]] || die '当前没有等待确认的 UI 修改；它可能尚未创建或已经自动回退。'
+  { IFS= read -r unit; IFS= read -r backup; IFS= read -r extra || true; } <"$PENDING_UI_FILE"
+  [[ -z "$extra" && "$unit" =~ ^${ROLLBACK_UNIT}-[0-9]+-[0-9]+-[0-9]+$ ]] || die '待确认记录格式异常，拒绝取消自动回退。'
+  [[ "$backup" == "$STATE_DIR/backups/"* && -d "$backup" ]] || die '待确认记录中的备份目录异常，拒绝取消自动回退。'
+  info "等待确认的备份：$backup"
+  confirm '网页强制刷新后是否确认正常并保留本次 UI 修改？' || { info '未确认，自动回退计时器保持有效。'; return 0; }
+  systemctl is-active --quiet "$unit.timer" 2>/dev/null || die '自动回退计时器已经到期或不存在；请刷新页面确认当前实际状态。'
+  systemctl stop -- "$unit.timer" 2>/dev/null || die '未能停止自动回退计时器；为安全起见没有删除待确认记录。'
+  if systemctl is-active --quiet "$unit.service" 2>/dev/null; then
+    die '自动回退已经开始，不能中途终止；请等待恢复完成后刷新页面。'
   fi
+  rm -f -- "$PENDING_UI_FILE"
+  info '已保留修改，自动回退已取消。'
 }
 
 restart_and_verify_pveproxy() {
@@ -337,7 +357,7 @@ restart_and_verify_pveproxy() {
     "$ROLLBACK_HELPER" "$CURRENT_BACKUP_DIR"
     die 'pveproxy 虽在运行，但本机 8006 API 无法访问；原始文件已恢复。'
   fi
-  info '未安装 curl，已完成服务状态校验；仍需在 KEEP 前由浏览器确认页面。'
+  info '未安装 curl，已完成服务状态校验；仍需在取消自动回退前由浏览器确认页面。'
 }
 
 restore_latest_ui() {
@@ -532,14 +552,13 @@ insert_after_pveversion() {
 }
 
 apply_overview() {
-  local pristine_dir='' node_source="$NODES_PM" js_source="$MANAGER_JS" answer block
+  local pristine_dir='' node_source="$NODES_PM" js_source="$MANAGER_JS" block
   [[ -f "$NODES_PM" && -f "$MANAGER_JS" ]] || die '未找到 PVE 前端文件。'
   overview_load
   if legacy_overview_detected "$NODES_PM" "$MANAGER_JS"; then
     info '检测到旧版 pve_source 概要代码。为防止字段重复，不能直接叠加新补丁。'
     info '迁移会先从当前 pve-manager 精确版本安装包提取原版文件；不会重装软件包。旧文件仍受 3 分钟自动回退保护。'
-    read -r -p '确认迁移请输入 MIGRATE：' answer
-    [[ "$answer" == MIGRATE ]] || { info '已取消；未修改任何文件。'; return 0; }
+    confirm '确认迁移旧版概要信息吗？' || { info '已取消；未修改任何文件。'; return 0; }
     pristine_dir=$(mktemp -d) || die '无法创建原版文件提取目录。'
     extract_pristine_pve_manager "$pristine_dir"
     node_source="$pristine_dir/root$NODES_PM"
@@ -876,6 +895,7 @@ PVE 简洁维护工具（PVE 9）
   4) 通过 accept_ra=2 为 vmbr0 启用 SLAAC IPv6（不重启网络）
   5) PCI 直通 / IOMMU（检查并按需准备 GRUB + VFIO）
   6) 恢复备份（UI / 软件源 / IPv6 / CT / IOMMU）
+  7) 确认保留刚才的 UI 修改（用于网页 Shell 断线后重新进入）
   0) 退出
 EOF
     read -r -p '请选择：' choice
@@ -886,6 +906,7 @@ EOF
       4) run_menu_action 'SLAAC IPv6' set_ipv6_slaac ;;
       5) run_menu_action 'PCI 直通 / IOMMU' passthrough_wizard ;;
       6) run_menu_action '恢复备份' restore_backup_menu ;;
+      7) run_menu_action '确认保留 UI 修改' confirm_keep_ui_changes ;;
       0) exit 0 ;; *) printf '无效选择。\n' ;;
     esac
   done
@@ -901,5 +922,9 @@ run_menu_action() {
 if [[ "${PVE_SENSIBLE_LIB_ONLY:-0}" != 1 ]]; then
   need_root
   need_pve9
-  menu
+  case "${1:-}" in
+    --keep-ui) confirm_keep_ui_changes ;;
+    '') menu ;;
+    *) die "未知参数：$1" ;;
+  esac
 fi
