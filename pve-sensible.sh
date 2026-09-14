@@ -487,6 +487,10 @@ preflight_overview_compatibility() {
       die '当前 PVE 的 Nodes.pm 与脚本不兼容；未修改任何文件。请提交 pveversion 附近的代码后再适配。'
     fi
   fi
+  if [[ "${PVE_SENSIBLE_SKIP_NODE_COMPILE:-0}" != 1 ]] && ! perl -c "$node_test" >/dev/null 2>&1; then
+    rm -f "$node_test" "$js_test" "$block"
+    die '概要后端代码预编译失败；未修改任何文件。'
+  fi
   if grep -q 'PVE_SENSIBLE_OVERVIEW' "$js_test"; then
     if ! update_overview_alignment "$js_test"; then
       rm -f "$node_test" "$js_test" "$block"
@@ -505,7 +509,7 @@ preflight_overview_compatibility() {
 
 insert_nodes_summary() {
   local target="$1"
-  perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "pveversion assignment not found\n"' "$target"
+  perl -0777 -i -pe 's{(\$res->\{pveversion\}\s*=\s*[^;]+;)}{$1\n\t# PVE_SENSIBLE_OVERVIEW\n\t\$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);\n} or die "pveversion assignment not found\n"' "$target"
 }
 
 write_overview_js_block() {
