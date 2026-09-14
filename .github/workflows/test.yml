@@ -47,6 +47,9 @@ jobs:
           EOF
           insert_nodes_summary "$test_file"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$test_file"
+          grep -Fq '$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);' "$test_file"
+          ! grep -q '^[[:space:]]*->{' "$test_file"
+          perl -c "$test_file"
       - name: Validate PVE Manager overview insertion matcher
         shell: bash
         run: |
@@ -145,12 +148,14 @@ jobs:
           test -f "$manager"
           ! legacy_overview_detected "$nodes" "$manager"
           OVERVIEW_ALIGN=j
-          preflight_overview_compatibility "$nodes" "$manager"
+          PVE_SENSIBLE_SKIP_NODE_COMPILE=1 preflight_overview_compatibility "$nodes" "$manager"
           insert_nodes_summary "$nodes"
           block=$(mktemp)
           write_overview_js_block "$block"
           insert_after_pveversion "$manager" "$block"
           grep -q 'PVE_SENSIBLE_OVERVIEW' "$nodes"
+          grep -Fq '$res->{pve_sensible_summary} = qx(/usr/local/lib/pve-sensible/summary.sh);' "$nodes"
+          ! grep -q '^[[:space:]]*->{' "$nodes"
           grep -q "textAlign: 'justify'" "$manager"
           node --check "$manager"
       - name: Validate CT template mirror replacement matcher
