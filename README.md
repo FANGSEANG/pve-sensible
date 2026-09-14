@@ -54,21 +54,47 @@ Debian、PVE、Ceph 的改动都会单独备份，并以 `apt-get update` 作验
 
 ## 使用
 
-在 PVE 9 的 Shell 中执行以下一行即可下载并启动：
+### 首次下载或更新后运行
+
+在 PVE 9 的 Shell 中执行：
 
 ```bash
 wget -qO /root/pve-sensible.sh https://raw.githubusercontent.com/FANGSEANG/pve-sensible/main/pve-sensible.sh && chmod 700 /root/pve-sensible.sh && /root/pve-sensible.sh
 ```
 
-它会把脚本保留在 `/root/pve-sensible.sh`，不会使用不便审查的 `curl | bash` 方式。你的主机如果已经运行过旧版 `pve_source` 概要功能，菜单 1 会先提示安全迁移。确认浏览器页面正常后，重新打开 Shell 并运行 `/root/pve-sensible.sh --keep-ui`，按 `y` 确认；否则 3 分钟后恢复操作前的 UI。
+该命令会覆盖 `/root/pve-sensible.sh` 为 GitHub 上的最新版、设置执行权限并打开中文主菜单。脚本保留在本地，不使用不便审查的 `curl | bash` 管道方式。
 
-后续再次打开菜单，直接执行：
+### 后续再次打开主菜单
 
 ```bash
 bash /root/pve-sensible.sh
 ```
 
-如需更新为 GitHub 上的最新版，再重新执行上面的 `wget` 一行命令即可。
+直接执行也可以：
+
+```bash
+/root/pve-sensible.sh
+```
+
+### 概要或订阅弹窗修改后的确认方法
+
+菜单 1 或菜单 3 会重启 `pveproxy`，因此从 PVE 网页打开的 Shell 可能自动断开。此时按以下顺序处理：
+
+1. 强制刷新 PVE 网页，检查登录页、概要页和菜单是否正常。
+2. 页面正常时，重新打开 PVE Shell。
+3. 在 3 分钟自动恢复倒计时结束前执行：
+
+```bash
+/root/pve-sensible.sh --keep-ui
+```
+
+4. 出现 `[y/N]` 提示后输入 `y` 并回车。
+
+也可以重新执行 `/root/pve-sensible.sh`，在主菜单选择 `7) 确认保留刚才的 UI 修改`，然后输入 `y`。如果页面异常，请不要确认；等待 3 分钟，脚本会自动恢复修改前的 UI 文件。
+
+你的主机如果已经运行过旧版 `pve_source` 概要功能，菜单 1 会先询问是否安全迁移，输入 `y` 才会继续，直接回车或输入 `n` 都会取消。
+
+### 离线复制后运行
 
 也可以先复制脚本到 PVE 9 主机，检查后执行：
 
